@@ -64,7 +64,11 @@ jobs:
           open('game/sh3.exe', 'wb').write(exe)
           PY
           rm zip-start.bin
-          [ "$(shasum game/sh3.exe | cut -d' ' -f1)" = aa2aca6dba19bf510c9c2e92eefdc15e98266581 ] || { echo "::error::not the exe the port is made for"; exit 1; }
+          # the retail exe the port was made for, or the owner's copy (same build, a few bytes patched; checked to recompile)
+          case "$(shasum game/sh3.exe | cut -d' ' -f1)" in
+            aa2aca6dba19bf510c9c2e92eefdc15e98266581|d851669ef609b3164e3581aa8dcfbfaec866cb79) ;;
+            *) echo "::error::not the exe the port is made for"; exit 1 ;;
+          esac
 
       - uses: actions/cache@v4  # Python packages only
         with:
