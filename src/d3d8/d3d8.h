@@ -74,6 +74,8 @@ typedef struct Dev {
 
 extern Dev *dev;
 
+extern uint32_t gl_attr_bgra;   /* d3d8.c: locations fed D3DCOLOR this draw (ES swaps them in the shader) */
+
 /* d3d8_res.c */
 uint32_t res_texture(uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool, int cube);
 uint32_t res_surface(uint32_t w, uint32_t h, uint32_t fmt, int is_rt, int is_depth);

@@ -27,7 +27,15 @@ if(NINTENDO_SWITCH)
   nx_generate_nacp(sh3.nacp NAME "Silent Hill 3" AUTHOR "sh3-nx" VERSION "0.06")
   nx_create_nro(sh3 OUTPUT sh3-nx.nro NACP sh3.nacp NOICON)
 else()
-  # GL is loaded at run time through SDL (src/d3d8/gl.c), so nothing links libGL.
+  # Desktop GL is loaded at run time through SDL (src/d3d8/gl.c), so nothing links libGL.
+  # SH2_GLES draws with OpenGL ES 3.0 instead, linked directly: what iOS has, and testable on Linux through mesa.
+  option(SH2_GLES "Draw with OpenGL ES 3.0 (the iOS renderer)" OFF)
   find_package(SDL2 REQUIRED)
   target_link_libraries(sh3 PRIVATE SDL2::SDL2 m pthread)
+  if(SH2_GLES)
+    target_compile_definitions(sh3 PRIVATE SH2_GLES)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GLES REQUIRED IMPORTED_TARGET glesv2)
+    target_link_libraries(sh3 PRIVATE PkgConfig::GLES)
+  endif()
 endif()

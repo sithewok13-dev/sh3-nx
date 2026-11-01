@@ -18,9 +18,23 @@ Res *res_of(uint32_t obj) {
 }
 
 /* ---- formats ---- */
-typedef struct { uint32_t fmt; int bpp, block; GLenum ifmt, gfmt, type; GLint swz[4]; } Fmt;
+/* conv: how ES needs the guest's pixels rearranged first (gles_pixels); always CV_NONE on desktop GL. */
+enum { CV_NONE, CV_SWAP_RB, CV_1555, CV_4444 };
+typedef struct { uint32_t fmt; int bpp, block; GLenum ifmt, gfmt, type; GLint swz[4]; int conv; } Fmt;
 #define RGBA {GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA}
 #define RGB1 {GL_RED, GL_GREEN, GL_BLUE, GL_ONE}
+#ifdef SH2_GLES
+/* ES 3.0 takes no BGRA and no reversed 16-bit packings: those formats are rearranged into R,G,B,A order on
+ * the way in (and back on readback), and DXT is decoded to RGBA8 where the driver has no S3TC. */
+static const Fmt fmts[] = {
+    {FMT_A8R8G8B8, 4, 0, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, RGBA, CV_SWAP_RB},
+    {FMT_X8R8G8B8, 4, 0, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, RGB1, CV_SWAP_RB},
+    {FMT_R5G6B5, 2, 0, GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, RGB1, CV_NONE},
+    {FMT_X1R5G5B5, 2, 0, GL_RGB5_A1, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, RGB1, CV_1555},
+    {FMT_A1R5G5B5, 2, 0, GL_RGB5_A1, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, RGBA, CV_1555},
+    {FMT_A4R4G4B4, 2, 0, GL_RGBA4, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, RGBA, CV_4444},
+    {FMT_X4R4G4B4, 2, 0, GL_RGBA4, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, RGB1, CV_4444},
+#else
 static const Fmt fmts[] = {
     {FMT_A8R8G8B8, 4, 0, GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE, RGBA},
     {FMT_X8R8G8B8, 4, 0, GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE, RGB1},
@@ -29,6 +43,7 @@ static const Fmt fmts[] = {
     {FMT_A1R5G5B5, 2, 0, GL_RGB5_A1, GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV, RGBA},
     {FMT_A4R4G4B4, 2, 0, GL_RGBA4, GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4_REV, RGBA},
     {FMT_X4R4G4B4, 2, 0, GL_RGBA4, GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4_REV, RGB1},
+#endif
     {FMT_A8, 1, 0, GL_R8, GL_RED, GL_UNSIGNED_BYTE, {GL_ZERO, GL_ZERO, GL_ZERO, GL_RED}},
     {FMT_L8, 1, 0, GL_R8, GL_RED, GL_UNSIGNED_BYTE, {GL_RED, GL_RED, GL_RED, GL_ONE}},
     {FMT_A8L8, 2, 0, GL_RG8, GL_RG, GL_UNSIGNED_BYTE, {GL_RED, GL_RED, GL_RED, GL_GREEN}},
@@ -59,6 +74,121 @@ static void level_size(const Fmt *f, uint32_t w, uint32_t h, uint32_t *pitch, ui
         *pitch = w * f->bpp;
         *size = *pitch * h;
     }
+}
+
+/* ---- ES pixel conversions ---- */
+#ifdef SH2_GLES
+/* One 4x4 DXT1/3/5 block to RGBA8 (R,G,B,A bytes), clipped to the w x h image at x, y. */
+static void dxt_block(const uint8_t *b, int kind, uint8_t *out, uint32_t w, uint32_t h, uint32_t x, uint32_t y) {
+    uint8_t alpha[16];
+    const uint8_t *cb = b;
+    if (kind == 3) {         /* explicit 4-bit alpha */
+        for (int i = 0; i < 16; i++) { int a = (b[i / 2] >> (4 * (i & 1))) & 15; alpha[i] = a * 17; }
+        cb = b + 8;
+    } else if (kind == 5) {  /* two endpoints and 3-bit indices */
+        uint8_t a[8] = {b[0], b[1]};
+        if (a[0] > a[1]) for (int i = 1; i < 7; i++) a[1 + i] = ((7 - i) * a[0] + i * a[1]) / 7;
+        else { for (int i = 1; i < 5; i++) a[1 + i] = ((5 - i) * a[0] + i * a[1]) / 5; a[6] = 0; a[7] = 255; }
+        uint64_t bits = 0;
+        for (int i = 0; i < 6; i++) bits |= (uint64_t)b[2 + i] << (8 * i);
+        for (int i = 0; i < 16; i++) alpha[i] = a[(bits >> (3 * i)) & 7];
+        cb = b + 8;
+    } else memset(alpha, 255, sizeof alpha);
+    uint16_t c0 = cb[0] | cb[1] << 8, c1 = cb[2] | cb[3] << 8;
+    uint8_t c[4][4];
+    for (int i = 0; i < 2; i++) {
+        uint16_t v = i ? c1 : c0;
+        c[i][0] = (v >> 11) * 255 / 31; c[i][1] = ((v >> 5) & 63) * 255 / 63; c[i][2] = (v & 31) * 255 / 31; c[i][3] = 255;
+    }
+    int four = kind != 1 || c0 > c1;  /* DXT1 with c0 <= c1: three colors and transparent black */
+    for (int k = 0; k < 3; k++) {
+        c[2][k] = four ? (2 * c[0][k] + c[1][k]) / 3 : (c[0][k] + c[1][k]) / 2;
+        c[3][k] = four ? (c[0][k] + 2 * c[1][k]) / 3 : 0;
+    }
+    c[2][3] = 255;
+    c[3][3] = four ? 255 : 0;
+    uint32_t idx = cb[4] | cb[5] << 8 | cb[6] << 16 | (uint32_t)cb[7] << 24;
+    for (int i = 0; i < 16; i++) {
+        uint32_t px = x + (i & 3), py = y + (i >> 2);
+        if (px >= w || py >= h) continue;
+        uint8_t *o = out + 4 * (py * w + px);
+        memcpy(o, c[(idx >> (2 * i)) & 3], 4);
+        if (kind != 1) o[3] = alpha[i];
+    }
+}
+
+/* The guest's pixels (rows pitch bytes apart) as ES takes them for f, tightly packed; NULL when ES takes them
+ * as they are. DXT comes out as RGBA8 when the driver has no S3TC (gles_dxt_decoded). The caller frees it. */
+static int gles_dxt_decoded(const Fmt *f) { return f->block && !gl_has_s3tc; }
+static void *gles_pixels(const Fmt *f, const void *src, uint32_t w, uint32_t h, uint32_t pitch) {
+    if (gles_dxt_decoded(f)) {
+        int kind = f->fmt == FMT_DXT1 ? 1 : f->fmt <= FMT_DXT3 ? 3 : 5;
+        uint8_t *out = malloc(4u * w * h);
+        for (uint32_t by = 0; by < (h + 3) / 4; by++)
+            for (uint32_t bx = 0; bx < (w + 3) / 4; bx++)
+                dxt_block((const uint8_t *)src + by * pitch + bx * f->block, kind, out, w, h, bx * 4, by * 4);
+        return out;
+    }
+    if (f->conv == CV_NONE) return NULL;
+    uint8_t *out = malloc((size_t)w * h * f->bpp);
+    for (uint32_t y = 0; y < h; y++) {
+        const uint8_t *r = (const uint8_t *)src + (size_t)y * pitch;
+        if (f->conv == CV_SWAP_RB) {  /* B,G,R,A bytes -> R,G,B,A */
+            uint8_t *o = out + (size_t)y * w * 4;
+            for (uint32_t x = 0; x < w; x++) { o[4 * x] = r[4 * x + 2]; o[4 * x + 1] = r[4 * x + 1]; o[4 * x + 2] = r[4 * x]; o[4 * x + 3] = r[4 * x + 3]; }
+        } else {  /* ARGB 1555 / 4444 -> RGBA 5551 / 4444: the alpha bits move from the top to the bottom */
+            uint16_t *o = (uint16_t *)(out + (size_t)y * w * 2);
+            int sh = f->conv == CV_1555 ? 1 : 4;
+            for (uint32_t x = 0; x < w; x++) {
+                uint16_t v = r[2 * x] | r[2 * x + 1] << 8;
+                o[x] = (uint16_t)(v << sh | v >> (16 - sh));
+            }
+        }
+    }
+    return out;
+}
+
+/* RGBA8 rows read back from GL into the guest's layout for format fmt, rows pitch bytes apart. */
+static void gles_from_rgba(uint32_t fmt, const uint8_t *rgba, uint8_t *dst, uint32_t w, uint32_t h, uint32_t pitch) {
+    static int warned;
+    for (uint32_t y = 0; y < h; y++) {
+        const uint8_t *s = rgba + (size_t)y * w * 4;
+        uint8_t *d = dst + (size_t)y * pitch;
+        for (uint32_t x = 0; x < w; x++, s += 4) {
+            uint32_t r = s[0], g = s[1], b = s[2], a = s[3];
+            uint16_t v;
+            switch (fmt) {
+            case FMT_A8R8G8B8: case FMT_X8R8G8B8: d[4 * x] = b; d[4 * x + 1] = g; d[4 * x + 2] = r; d[4 * x + 3] = a; continue;
+            case FMT_R5G6B5: v = (r >> 3) << 11 | (g >> 2) << 5 | b >> 3; break;
+            case FMT_X1R5G5B5: case FMT_A1R5G5B5: v = (a >> 7) << 15 | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3; break;
+            case FMT_A4R4G4B4: case FMT_X4R4G4B4: v = (a >> 4) << 12 | (r >> 4) << 8 | (g >> 4) << 4 | b >> 4; break;
+            default:
+                if (!warned++) rt_log("GL: readback of format %u not converted", fmt);
+                return;
+            }
+            d[2 * x] = v & 255;
+            d[2 * x + 1] = v >> 8;
+        }
+    }
+}
+#endif
+
+/* glTexSubImage2D of guest pixels (rows pitch bytes apart), converted first where ES needs it. */
+static void tex_sub_image(GLenum target, int level, int x, int y, uint32_t w, uint32_t h, const Fmt *f,
+                          const void *px, uint32_t pitch) {
+#ifdef SH2_GLES
+    void *conv = gles_pixels(f, px, w, h, pitch);
+    if (conv) {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        if (gles_dxt_decoded(f)) glTexSubImage2D(target, level, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, conv);
+        else glTexSubImage2D(target, level, x, y, w, h, f->gfmt, f->type, conv);
+        free(conv);
+        return;
+    }
+#endif
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, f->bpp && pitch != w * f->bpp ? pitch / f->bpp : 0);
+    glTexSubImage2D(target, level, x, y, w, h, f->gfmt, f->type, px);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 }
 
 /* ---- objects ---- */
@@ -174,13 +304,24 @@ static void gl_ensure(Res *t) {
     glBindTexture(target, t->tex);
     uint32_t levels = t->kind == RES_SURFACE ? 1 : t->levels;
     glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, levels - 1);
+#ifdef SH2_GLES
+    glTexParameteri(target, GL_TEXTURE_SWIZZLE_R, f->swz[0]);
+    glTexParameteri(target, GL_TEXTURE_SWIZZLE_G, f->swz[1]);
+    glTexParameteri(target, GL_TEXTURE_SWIZZLE_B, f->swz[2]);
+    glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, f->swz[3]);
+#else
     glTexParameteriv(target, GL_TEXTURE_SWIZZLE_RGBA, f->swz);
+#endif
     for (int face = 0; face < (t->kind == RES_CUBE ? 6 : 1); face++)
         for (uint32_t l = 0; l < levels; l++) {
             uint32_t w = t->w >> l ? t->w >> l : 1, h = t->h >> l ? t->h >> l : 1, pitch, size;
             if (t->is_depth)
                 glTexImage2D(face_target(t, face), l, GL_DEPTH24_STENCIL8, w, h, 0, GL_DEPTH_STENCIL,
                              GL_UNSIGNED_INT_24_8, NULL);
+#ifdef SH2_GLES
+            else if (gles_dxt_decoded(f))
+                glTexImage2D(face_target(t, face), l, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+#endif
             else if (f->block) {
                 level_size(f, w, h, &pitch, &size);
                 glCompressedTexImage2D(face_target(t, face), l, f->ifmt, w, h, 0, size, NULL);
@@ -196,7 +337,8 @@ static void upload_level(Res *t, Res *s) {
     GLenum target = face_target(t, s->face);
     glBindTexture(t->kind == RES_CUBE ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, t->tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    if (f->block) glCompressedTexSubImage2D(target, s->level, 0, 0, s->w, s->h, f->ifmt, s->size, GPTR(s->mem));
+    if (f->block && gl_has_s3tc) glCompressedTexSubImage2D(target, s->level, 0, 0, s->w, s->h, f->ifmt, s->size, GPTR(s->mem));
+    else if (f->block) tex_sub_image(target, s->level, 0, 0, s->w, s->h, f, GPTR(s->mem), s->pitch);
     else if (s->fmt == FMT_P8) {
         /* The indices through the current palette. PALETTEENTRY is R,G,B,flags in memory, and flags
          * is the alpha (D3DPTEXTURECAPS_ALPHAPALETTE, as on the GeForce-class cards the game was made
@@ -213,7 +355,7 @@ static void upload_level(Res *t, Res *s) {
         for (uint32_t i = 0; i < s->w * s->h; i++) rgba[i] = pal[src[i]] | opaque;
         glTexSubImage2D(target, s->level, 0, 0, s->w, s->h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
         free(rgba);
-    } else glTexSubImage2D(target, s->level, 0, 0, s->w, s->h, f->gfmt, f->type, GPTR(s->mem));
+    } else tex_sub_image(target, s->level, 0, 0, s->w, s->h, f, GPTR(s->mem), s->pitch);
     s->dirty = 0;
 }
 
@@ -287,7 +429,15 @@ static void readback(Res *s) {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, surface_tex(s), s->level);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+#ifdef SH2_GLES  /* ES reads RGBA8, converted to the surface's format */
+    uint8_t *rgba = malloc(4u * s->w * s->h);
+    glReadPixels(0, 0, s->w, s->h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    gles_from_rgba(s->fmt, rgba, GPTR(s->mem), s->w, s->h, s->pitch);
+    free(rgba);
+    (void)f;
+#else
     glReadPixels(0, 0, s->w, s->h, f->gfmt, f->type, GPTR(s->mem));
+#endif
     glDeleteFramebuffers(1, &fb);
     glBindFramebuffer(GL_FRAMEBUFFER, dev->fbo);
 }
@@ -329,10 +479,17 @@ uint32_t res_read_front(uint32_t dst_o) {
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                            front_tex && front_w == src->w && front_h == src->h ? front_tex : surface_tex(src), 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    uint32_t rw = src->w < dst->w ? src->w : dst->w, rh = src->h < dst->h ? src->h : dst->h;
+#ifdef SH2_GLES
+    uint8_t *rgba = malloc(4u * rw * rh);
+    glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    gles_from_rgba(FMT_A8R8G8B8, rgba, GPTR(dst->mem), rw, rh, dst->pitch);
+    free(rgba);
+#else
     glPixelStorei(GL_PACK_ROW_LENGTH, dst->pitch / 4);
-    glReadPixels(0, 0, src->w < dst->w ? src->w : dst->w, src->h < dst->h ? src->h : dst->h, GL_BGRA,
-                 GL_UNSIGNED_BYTE, GPTR(dst->mem));
+    glReadPixels(0, 0, rw, rh, GL_BGRA, GL_UNSIGNED_BYTE, GPTR(dst->mem));
     glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+#endif
     glDeleteFramebuffers(1, &fb);
     for (uint32_t i = 0; i < dst->size; i += 4) *(uint8_t *)GPTR(dst->mem + i + 3) = 0xFF;
     mark_dirty(dst);
@@ -373,11 +530,9 @@ uint32_t res_copy_rects(uint32_t src_o, uint32_t rects, uint32_t n, uint32_t dst
             mark_dirty(dst);
         } else {         /* guest copy into a render target */
             glBindTexture(GL_TEXTURE_2D, surface_tex(dst));
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, src->w);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            glTexSubImage2D(GL_TEXTURE_2D, dst->level, dx, dy, w, h, f->gfmt, f->type,
-                            GPTR(src->mem + r[1] * src->pitch + r[0] * f->bpp));
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            tex_sub_image(GL_TEXTURE_2D, dst->level, dx, dy, w, h, f,
+                          GPTR(src->mem + r[1] * src->pitch + r[0] * f->bpp), src->pitch);
         }
     }
     return 0;
@@ -436,7 +591,7 @@ static uint32_t unlock_surface(Res *s) {
         const Fmt *f = fmt_info(s->fmt);
         glBindTexture(GL_TEXTURE_2D, surface_tex(s));
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, s->w, s->h, f->gfmt, f->type, GPTR(s->mem));
+        tex_sub_image(GL_TEXTURE_2D, 0, 0, 0, s->w, s->h, f, GPTR(s->mem), s->pitch);
     }
     return 0;
 }

@@ -5,6 +5,14 @@
 #include <math.h>
 #include <SDL2/SDL.h>
 
+/* The first lines of every shader. ES needs its precisions stated; highp everywhere matches desktop GL. */
+#ifdef SH2_GLES
+#define GLSL_HEADER "#version 300 es\nprecision highp float;\nprecision highp int;\n" \
+                    "precision highp sampler2D;\nprecision highp samplerCube;\n"
+#else
+#define GLSL_HEADER "#version 430 core\n"
+#endif
+
 /* ---- string builder ---- */
 typedef struct { char *s; size_t n, cap; } Str;
 static void sp(Str *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -218,7 +226,12 @@ static void parse_decl(VShader *v, uint32_t decl) {
 static char *translate_vs(uint32_t func) {
     Str b = {0};
     sp(&b, "uniform vec4 c[96];\nint a0 = 0;\n");
+#ifdef SH2_GLES
+    /* build() declares the attributes and copies them in, swapping D3DCOLOR ones (ES reads them as RGBA) */
+    sp(&b, "vec4 v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15;\n");
+#else
     for (int i = 0; i < 16; i++) sp(&b, "layout(location = %d) in vec4 v%d;\n", i, i);
+#endif
     sp(&b, "%s", glsl_helpers);
     sp(&b, "void vs_main(out vec4 oPos, out vec4 oD0, out vec4 oD1, out vec4 oT0, out vec4 oT1, out vec4 oT2,"
            " out vec4 oT3, out vec4 oT4, out vec4 oT5, out vec4 oT6, out vec4 oT7, out float oFog, out float oPts) {\n");
@@ -326,6 +339,7 @@ typedef struct {
     uint8_t tci[8], tcgen[8], ttff[8], tcsize[8];
     uint8_t colorop[8], ca[8][3], alphaop[8], aa[8][3], result[8], textype[8];
     uint8_t alphatest, alphafunc, fogmode, fogtable, specenable, fogenable;
+    uint16_t bgra;            /* ES: attribute locations holding D3DCOLOR, swapped in the vertex shader */
 } Key;
 
 typedef struct Prog {
@@ -356,7 +370,9 @@ static void ffp_vs(Str *b, const Key *k) {
     sp(b, "void vs_main(out vec4 oPos, out vec4 oD0, out vec4 oD1, out vec4 oT0, out vec4 oT1, out vec4 oT2,"
           " out vec4 oT3, out vec4 oT4, out vec4 oT5, out vec4 oT6, out vec4 oT7, out float oFog, out float oPts) {\n");
     sp(b, "  vec4 oT[8]; oPts = 1.0;\n");
-    sp(b, "  vec4 dif = %s, spe = %s;\n", k->diffuse ? "aDiffuse" : "vec4(1.0)", k->specular ? "aSpecular" : "vec4(0.0)");
+    sp(b, "  vec4 dif = %s, spe = %s;\n",
+       k->diffuse ? (k->bgra & 1 << 5 ? "aDiffuse.zyxw" : "aDiffuse") : "vec4(1.0)",
+       k->specular ? (k->bgra & 1 << 6 ? "aSpecular.zyxw" : "aSpecular") : "vec4(0.0)");
     if (k->rhw) {
         /* Screen-space vertices: undo the viewport so GL's viewport puts them back. */
         sp(b, "  float w = aPos.w == 0.0 ? 1.0 : 1.0 / aPos.w;\n"
@@ -515,17 +531,33 @@ static GLuint compile(GLenum type, const char *src) {
 
 static Prog *build(const Key *k) {
     Str v = {0}, f = {0};
-    sp(&v, "#version 430 core\n");
+    sp(&v, GLSL_HEADER);
     if (k->ffp_vs) ffp_vs(&v, k);
-    else sp(&v, "%s", vs_of(k->vs)->glsl);
+    else {
+        sp(&v, "%s", vs_of(k->vs)->glsl);
+#ifdef SH2_GLES
+        for (int i = 0; i < 16; i++) sp(&v, "layout(location = %d) in vec4 a_v%d;\n", i, i);
+#endif
+    }
     sp(&v, "uniform vec2 uHalfPix;\nout vec4 vD0, vD1, vT0, vT1, vT2, vT3, vT4, vT5, vT6, vT7;\nout float vFog, vFogZ;\n"
-           "void main() {\n  vec4 p; float fog, pts;\n"
-           "  vs_main(p, vD0, vD1, vT0, vT1, vT2, vT3, vT4, vT5, vT6, vT7, fog, pts);\n"
+           "void main() {\n  vec4 p; float fog, pts;\n");
+#ifdef SH2_GLES
+    if (!k->ffp_vs)
+        for (int i = 0; i < 16; i++) sp(&v, "  v%d = a_v%d%s;\n", i, i, k->bgra & 1 << i ? ".zyxw" : "");
+#endif
+    sp(&v, "  vs_main(p, vD0, vD1, vT0, vT1, vT2, vT3, vT4, vT5, vT6, vT7, fog, pts);\n"
            "  vD0 = clamp(vD0, 0.0, 1.0); vD1 = clamp(vD1, 0.0, 1.0);\n"
            "  vFog = clamp(fog, 0.0, 1.0); vFogZ = p.w;\n"
-           "  p.xy += uHalfPix * p.w;\n  gl_Position = p;\n  gl_PointSize = max(pts, 1.0);\n}\n");
+           "  p.xy += uHalfPix * p.w;\n");
+    /* Without glClipControl (ES) the shader maps D3D's clip space to GL's itself */
+    sp(&v, "%s", gl_clip_vertex_fixup());
+#ifdef SH2_GLES
+    /* ES has no depth clamp: screen-space vertices (z exactly 0 or 1 for UI quads) are kept in the volume here */
+    if (k->rhw) sp(&v, "  p.z = clamp(p.z, -p.w, p.w);\n");
+#endif
+    sp(&v, "  gl_Position = p;\n  gl_PointSize = max(pts, 1.0);\n}\n");
 
-    sp(&f, "#version 430 core\nin vec4 vD0, vD1, vT0, vT1, vT2, vT3, vT4, vT5, vT6, vT7;\nin float vFog, vFogZ;\n"
+    sp(&f, GLSL_HEADER "in vec4 vD0, vD1, vT0, vT1, vT2, vT3, vT4, vT5, vT6, vT7;\nin float vFog, vFogZ;\n"
            "uniform vec4 pc[8]; uniform vec4 uTFactor, uFogColor, uFogParams; uniform float uAlphaRef;\n"
            "out vec4 fragColor;\n");
     for (int s = 0; s < 8; s++) {
@@ -776,6 +808,9 @@ void shader_bind_for_draw(int rhw, uint32_t vs, const int *present) {
     k.alphafunc = rs[25];
     k.fogenable = rs[28];
     k.fogtable = rs[28] ? rs[35] : 0;
+#ifdef SH2_GLES
+    k.bgra = (uint16_t)gl_attr_bgra;
+#endif
 
     progcache_warmup();
     Prog *p = prog_get(&k, 1);
@@ -846,7 +881,11 @@ void shader_bind_for_draw(int rhw, uint32_t vs, const int *present) {
     if (!samplers[0]) glGenSamplers(8, samplers);
     for (int s = 0; s < 8; s++) {
         uint32_t *t = dev->tss[s];
+#ifdef SH2_GLES  /* ES 3.0 has neither BORDER nor MIRRORONCE: their nearest kin */
+        static const GLint wrap[6] = {GL_REPEAT, GL_REPEAT, GL_MIRRORED_REPEAT, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_MIRRORED_REPEAT};
+#else
         static const GLint wrap[6] = {GL_REPEAT, GL_REPEAT, GL_MIRRORED_REPEAT, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_BORDER, GL_MIRROR_CLAMP_TO_EDGE};
+#endif
         glSamplerParameteri(samplers[s], GL_TEXTURE_WRAP_S, wrap[t[13] < 6 ? t[13] : 1]);
         glSamplerParameteri(samplers[s], GL_TEXTURE_WRAP_T, wrap[t[14] < 6 ? t[14] : 1]);
         glSamplerParameteri(samplers[s], GL_TEXTURE_WRAP_R, wrap[t[25] < 6 ? t[25] : 1]);
@@ -856,9 +895,11 @@ void shader_bind_for_draw(int rhw, uint32_t vs, const int *present) {
                    : mip == 1 ? (lin_min ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST)
                               : (lin_min ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR);
         glSamplerParameteri(samplers[s], GL_TEXTURE_MIN_FILTER, minf);
+#ifndef SH2_GLES
         float bc[4];
         color4(bc, t[15]);
         glSamplerParameterfv(samplers[s], GL_TEXTURE_BORDER_COLOR, bc);
+#endif
         glBindSampler(s, samplers[s]);
     }
 }

@@ -131,6 +131,25 @@ static void device_reset(uint32_t pp);
 void gl_context_open(void) {
     static SDL_GLContext ctx;
     if (ctx) return;
+#ifdef SH2_GLES
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    /* Only Present's blit draws to the window: it needs no depth or stencil of its own. */
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
+    ctx = SDL_GL_CreateContext(rt_window);
+    if (!ctx) rt_fatal("no OpenGL ES 3.0 context: %s", SDL_GetError());
+    SDL_GL_SetSwapInterval(1);
+    GLint n_ext = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &n_ext);
+    for (GLint i = 0; i < n_ext; i++)
+        if (!strcmp((const char *)glGetStringi(GL_EXTENSIONS, i), "GL_EXT_texture_compression_s3tc")) gl_has_s3tc = 1;
+    if (getenv("SH2_NO_S3TC")) gl_has_s3tc = 0;  /* testing: decode DXT as on Apple's ES */
+    rt_log("GL: %s / %s, DXT %s", glGetString(GL_RENDERER), glGetString(GL_VERSION),
+           gl_has_s3tc ? "native" : "decoded to RGBA8");
+    return;
+#endif
     /* 4.5 core has glClipControl; older contexts are tried so the log says what the driver offers. */
     static const int versions[][2] = {{4, 6}, {4, 5}, {4, 3}};
     for (int i = 0; i < 3 && !ctx; i++) {
@@ -151,6 +170,7 @@ METHOD(d3d_CreateDevice, 7) {
            MEM32(pp + 8), MEM32(pp + 28), MEM32(pp + 32), MEM32(pp + 36), ARG(4));
     if (!dev) {
         gl_context_open();
+#ifndef SH2_GLES
         rt_log("GL: %s / %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
         GLint n_ext = 0, clip_control = 0;
         glGetIntegerv(GL_NUM_EXTENSIONS, &n_ext);
@@ -158,6 +178,7 @@ METHOD(d3d_CreateDevice, 7) {
             if (!strcmp((const char *)glGetStringi(GL_EXTENSIONS, i), "GL_ARB_clip_control")) clip_control = 1;
         if (!clip_control) rt_log("GL: no ARB_clip_control, the image will be upside down");
         glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);  /* D3D's y-down rows and [0,1] depth */
+#endif
         dev = calloc(1, sizeof *dev);
         dev->obj = com_new(device_vtable(), 16);
         res_init_vtables();
@@ -307,7 +328,7 @@ METHOD(dev_Present, 5) {
     Res *bb = res_of(dev->backbuffer);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, dev->fbo);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, bb->tex, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_screen_fbo());
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -323,9 +344,14 @@ METHOD(dev_Present, 5) {
     if (shot && (frame++ < 10 || frame % (every ? atoi(every) : 30) == 1)) {
         char path[512];
         snprintf(path, sizeof path, "%s/frame%05d.ppm", shot, frame - 1);
-        uint8_t *px = malloc(bb->w * bb->h * 3);
+        uint8_t *px = malloc(bb->w * bb->h * 4);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
+#ifdef SH2_GLES  /* ES reads RGBA only: packed down to RGB here */
+        glReadPixels(0, 0, bb->w, bb->h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        for (uint32_t i = 0; i < bb->w * bb->h; i++) memmove(px + 3 * i, px + 4 * i, 3);
+#else
         glReadPixels(0, 0, bb->w, bb->h, GL_RGB, GL_UNSIGNED_BYTE, px);
+#endif
         FILE *f = fopen(path, "wb");
         if (f) { fprintf(f, "P6 %u %u 255\n", bb->w, bb->h); fwrite(px, 3, bb->w * bb->h, f); fclose(f); }
         free(px);
@@ -653,7 +679,7 @@ static void apply_render_states(void) {
     if (rs[22] == 1) glDisable(GL_CULL_FACE);
     else {
         glEnable(GL_CULL_FACE);
-        glFrontFace(GL_CW);
+        glFrontFace(gl_d3d_front_face());
         glCullFace(rs[22] == 2 ? GL_FRONT : GL_BACK);  /* CULL_CW drops clockwise (front) faces */
     }
     if (rs[52] && dev->ds) {
@@ -664,7 +690,12 @@ static void apply_render_states(void) {
     } else glDisable(GL_STENCIL_TEST);
     uint32_t cw = rs[168];
     glColorMask(cw & 1, (cw >> 1) & 1, (cw >> 2) & 1, (cw >> 3) & 1);
+#ifdef SH2_GLES
+    static int poly_warned;
+    if (rs[8] != 3 && !poly_warned++) rt_log("GL: FILLMODE %u drawn solid (ES has no polygon modes)", rs[8]);
+#else
     glPolygonMode(GL_FRONT_AND_BACK, rs[8] == 1 ? GL_POINT : rs[8] == 2 ? GL_LINE : GL_FILL);
+#endif
     if (rs[47]) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(0, -(float)rs[47]); }  /* ZBIAS */
     else glDisable(GL_POLYGON_OFFSET_FILL);
 }
@@ -683,13 +714,21 @@ static uint32_t prim_verts(uint32_t t, uint32_t n) {
     }
 }
 
+/* Attribute locations fed D3DCOLOR (B,G,R,A bytes) this draw. Desktop GL reads them as BGRA itself; ES
+ * reads R,G,B,A and the vertex shader swaps them back (d3d8_shader.c). */
+uint32_t gl_attr_bgra;
+
 /* Vertex attribute locations: D3DVSDE numbering for the fixed pipeline (0 position, 1 blend weights,
  * 2 blend indices, 3 normal, 4 point size, 5 diffuse, 6 specular, 7-14 texcoords); v# for shaders. */
 static void attrib(int loc, int type, GLsizei stride, uintptr_t off) {
     glEnableVertexAttribArray(loc);
     switch (type) {
     case 0: case 1: case 2: case 3: glVertexAttribPointer(loc, type + 1, GL_FLOAT, 0, stride, (void *)off); break;
+#ifdef SH2_GLES
+    case 4: glVertexAttribPointer(loc, 4, GL_UNSIGNED_BYTE, 1, stride, (void *)off); gl_attr_bgra |= 1u << loc; break;  /* D3DCOLOR */
+#else
     case 4: glVertexAttribPointer(loc, GL_BGRA, GL_UNSIGNED_BYTE, 1, stride, (void *)off); break;  /* D3DCOLOR */
+#endif
     case 5: glVertexAttribPointer(loc, 4, GL_UNSIGNED_BYTE, 0, stride, (void *)off); break;        /* UBYTE4 */
     case 6: glVertexAttribPointer(loc, 2, GL_SHORT, 0, stride, (void *)off); break;
     case 7: glVertexAttribPointer(loc, 4, GL_SHORT, 0, stride, (void *)off); break;
@@ -699,6 +738,7 @@ static void attrib(int loc, int type, GLsizei stride, uintptr_t off) {
 /* Sets up attributes for stream 0 (FVF) or the declaration's streams. base: GL buffer offsets of each
  * stream's vertex 0; up_stride: stride for DrawPrimitiveUP. Returns 1 when vertices are pretransformed. */
 static int setup_attribs(const uintptr_t *base, const GLuint *bufs, uint32_t up_stride, int *present) {
+    gl_attr_bgra = 0;
     for (int i = 0; i < 16; i++) { glDisableVertexAttribArray(i); present[i] = 0; }
     if (dev->vs < 0xF0000000u) {
         uint32_t fvf = dev->vs, stride = up_stride ? up_stride : dev->stride[0], off = 0;
@@ -756,7 +796,9 @@ static void draw_setup(const uintptr_t *base, const GLuint *bufs, uint32_t up_st
     int rhw = setup_attribs(base, bufs, up_stride, present);
     /* Screen-space vertices are never clipped by depth in D3D; UI quads sit at z = 0 or 1 exactly,
      * which nouveau's rounding pushes just outside the clip volume. */
+#ifndef SH2_GLES  /* ES has no depth clamp: rhw vertices are clamped in the vertex shader (d3d8_shader.c) */
     if (rhw) glEnable(GL_DEPTH_CLAMP); else glDisable(GL_DEPTH_CLAMP);
+#endif
     shader_bind_for_draw(rhw, dev->vs, present);
 }
 
@@ -795,11 +837,20 @@ METHOD(dev_DrawIndexedPrimitive, 6) {
     uintptr_t base[16];
     GLuint bufs[16];
     stream_bases(base, bufs);
+#ifdef SH2_GLES
+    /* ES 3.0 has no base-vertex draws: every stream starts base_vertex vertices in instead. */
+    for (int s = 0; s < 16; s++) base[s] = (uintptr_t)dev->base_vertex * dev->stride[s];
+#endif
     draw_setup(base, bufs, 0);
     gl_buffer(ib, GL_ELEMENT_ARRAY_BUFFER);
     int is32 = ib->fmt == FMT_INDEX32;
+#ifdef SH2_GLES
+    glDrawElements(prim_mode(ARG(1)), prim_verts(ARG(1), ARG(5)), is32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
+                   (void *)(uintptr_t)(ARG(4) * (is32 ? 4 : 2)));
+#else
     glDrawElementsBaseVertex(prim_mode(ARG(1)), prim_verts(ARG(1), ARG(5)), is32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
                              (void *)(uintptr_t)(ARG(4) * (is32 ? 4 : 2)), dev->base_vertex);
+#endif
     return 0;
 }
 

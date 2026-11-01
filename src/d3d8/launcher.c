@@ -82,6 +82,7 @@ static void present(const uint32_t *px, int w, int h) {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
     int ww, wh;
     SDL_GL_GetDrawableSize(rt_window, &ww, &wh);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_screen_fbo());  /* not 0 on iOS */
     glClear(GL_COLOR_BUFFER_BIT);
     /* the texture's row 0 is the image's top, the window's row 0 its bottom */
     float s = fminf((float)ww / w, (float)wh / h);
