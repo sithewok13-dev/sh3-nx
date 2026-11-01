@@ -25,13 +25,8 @@ STUB void ee_file_opened(const char *guest, FILE *f) { (void)guest; (void)f; }
 STUB uint32_t ee_rumble_gain(uint32_t magnitude) { return magnitude; }
 
 /* ---- calls into the layer ---- */
-/* The bridges' section: sh2_bridges in sh2-nx, game_bridges in sh3-nx. */
-extern const Bridge __start_sh2_bridges[] STUB, __stop_sh2_bridges[] STUB;
-extern const Bridge __start_game_bridges[] STUB, __stop_game_bridges[] STUB;
 static uint32_t call_bridge(const char *name, int n, const uint32_t *a) {
-    const Bridge *lo = __start_sh2_bridges ? __start_sh2_bridges : __start_game_bridges;
-    const Bridge *hi = __start_sh2_bridges ? __stop_sh2_bridges : __stop_game_bridges;
-    for (const Bridge *b = lo; b < hi; b++)
+    for (const Bridge *b = rt_bridges_begin; b < rt_bridges_end; b++)
         if (!strcmp(b->name, name)) {
             for (int i = n - 1; i >= 0; i--) PUSH32(g_esp, a[i]);
             PUSH32(g_esp, 0xFFFFFFF0u);

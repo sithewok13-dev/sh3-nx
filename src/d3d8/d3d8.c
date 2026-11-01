@@ -130,7 +130,11 @@ static void device_reset(uint32_t pp);
 /* The GL context, made by the launcher or the first CreateDevice. */
 void gl_context_open(void) {
     static SDL_GLContext ctx;
-    if (ctx) return;
+    if (ctx) {
+        /* made on another thread (iOS opens it on the main thread, the game draws on its own) */
+        if (SDL_GL_GetCurrentContext() != ctx) SDL_GL_MakeCurrent(rt_window, ctx);
+        return;
+    }
 #ifdef SH2_GLES
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -356,6 +360,9 @@ METHOD(dev_Present, 5) {
         if (f) { fprintf(f, "P6 %u %u 255\n", bb->w, bb->h); fwrite(px, 3, bb->w * bb->h, f); fclose(f); }
         free(px);
     }
+#ifdef SH2_IOS
+    ios_frame_gate();  /* parks here while the app is in the background */
+#endif
     SDL_GL_SwapWindow(rt_window);
     static Uint64 stat_t0;
     static int stat_frames;

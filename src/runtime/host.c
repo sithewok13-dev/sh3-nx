@@ -3,6 +3,8 @@
 #include "host.h"
 #include "rt.h"
 #include <pthread.h>
+
+uint64_t host_arena_bytes = 1ull << 32;
 #ifdef __SWITCH__
 #include <switch.h>
 #include <malloc.h>
@@ -216,9 +218,25 @@ void host_thread_resume(HostThread *t) {
 void host_thread_signal(HostThread *t, int sig) { pthread_kill(t->pt, sig); }
 
 void *host_arena_reserve(void) {
+#ifdef SH2_IOS
+    /* iOS caps an app's address space unless it has the extended-virtual-addressing entitlement (paid
+     * developer accounts; sideloading with a free one strips it). Less than 4 GB still runs the game: its
+     * image sits at 0x400000 and the heap grows up from 0x10000000, so a smaller arena only lowers the
+     * heap's ceiling (galloc). Guest addresses past the arena are then no longer guaranteed to fault. */
+    static const uint64_t sizes[] = {4ull << 30, 3ull << 30, 2ull << 30, 3ull << 29, 1ull << 30};
+    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) {
+        void *p = mmap(NULL, sizes[i], PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (p == MAP_FAILED) continue;
+        host_arena_bytes = sizes[i];
+        rt_log("host: guest arena %u MB", (unsigned)(sizes[i] >> 20));
+        return p;
+    }
+    rt_fatal("cannot reserve even 1 GB of address space for the game");
+#else
     void *p = mmap(NULL, 1ull << 32, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) rt_fatal("cannot reserve the 4 GB guest arena");
     return p;
+#endif
 }
 
 void host_arena_commit(uint32_t va, uint32_t len) {

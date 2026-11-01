@@ -572,11 +572,18 @@ static void mm_timer_thread(void *unused) {
             if (t->live && t->due < next) next = t->due;
         }
         struct timespec ts;
+        uint64_t wait = next > now ? next - now : 0;
+#ifdef __APPLE__  /* no pthread_condattr_setclock there: a relative wait keeps it off the wall clock */
+        ts.tv_sec = wait / 1000000000ull;
+        ts.tv_nsec = wait % 1000000000ull;
+        pthread_cond_timedwait_relative_np(&mm_cv, &mm_mx, &ts);
+#else
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        uint64_t wait = next > now ? next - now : 0, abs_ns = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec + wait;
+        uint64_t abs_ns = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec + wait;
         ts.tv_sec = abs_ns / 1000000000ull;
         ts.tv_nsec = abs_ns % 1000000000ull;
         pthread_cond_timedwait(&mm_cv, &mm_mx, &ts);
+#endif
     }
 }
 WINAPI(timeSetEvent, "timeSetEvent", 5) {
@@ -584,7 +591,9 @@ WINAPI(timeSetEvent, "timeSetEvent", 5) {
     if (!mm_thread_up) {
         pthread_condattr_t ca;
         pthread_condattr_init(&ca);
+#ifndef __APPLE__
         pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+#endif
         pthread_cond_init(&mm_cv, &ca);
         mm_thread_up = 1;
         rt_spawn(mm_timer_thread, NULL, 256u << 10);
@@ -1087,8 +1096,7 @@ WINAPI(LoadLibraryA, "LoadLibraryA", 1) {
 }
 WINAPI(GetProcAddress, "GetProcAddress", 2) {
     if (ARG(1) < 0x10000) return 0;
-    extern const Bridge __start_game_bridges[], __stop_game_bridges[];
-    for (const Bridge *b = __start_game_bridges; b < __stop_game_bridges; b++)
+    for (const Bridge *b = rt_bridges_begin; b < rt_bridges_end; b++)
         if (!strcmp(b->name, GSTR(ARG(1)))) return rt_host_fn(b->name, b->fn);
     if (rt_trace) rt_log("GetProcAddress(%s): not bridged", GSTR(ARG(1)));
     return 0;

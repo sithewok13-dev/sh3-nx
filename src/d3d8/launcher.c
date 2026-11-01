@@ -10,10 +10,17 @@
 #define CW 1280
 #define CH 720
 
+#ifdef __APPLE__  /* Mach-O: its own section names, and C symbols carry a leading underscore */
+#define ASSET(name, path) \
+    __asm__(".pushsection __TEXT,__const\n.p2align 4\n.globl _" #name "_bmp\n_" #name "_bmp:\n.incbin \"" SRC_DIR "/" path "\"\n" \
+            ".globl _" #name "_bmp_end\n_" #name "_bmp_end:\n.popsection"); \
+    extern const uint8_t name##_bmp[], name##_bmp_end[];
+#else
 #define ASSET(name, path) \
     __asm__(".section .rodata\n.balign 16\n.global " #name "_bmp\n" #name "_bmp:\n.incbin \"" SRC_DIR "/" path "\"\n" \
             ".global " #name "_bmp_end\n" #name "_bmp_end:\n.previous"); \
     extern const uint8_t name##_bmp[], name##_bmp_end[];
+#endif
 ASSET(splash, "assets/splash.bmp")
 ASSET(logo, "assets/logo.bmp")  /* the README's */
 ASSET(font, "assets/font.bmp")  /* ASCII 32-126, 16x6 cells of 40x80, baseline at 60, 36 px advance */
@@ -88,6 +95,9 @@ static void present(const uint32_t *px, int w, int h) {
     float s = fminf((float)ww / w, (float)wh / h);
     int dw = w * s, dh = h * s, dx = (ww - dw) / 2, dy = (wh - dh) / 2;
     glBlitFramebuffer(0, 0, w, h, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+#ifdef SH2_IOS
+    ios_frame_gate();
+#endif
     SDL_GL_SwapWindow(rt_window);
 }
 
@@ -179,7 +189,12 @@ typedef struct {
 } Opt;
 
 static Opt opts[] = {
+#ifdef SH2_IOS  /* "screen": the phone's own shape, as wide as the game allows (rt_core.c read_ini) */
+    {"Resolution", "resolution", {"screen", "1920x1080", "1280x720", "960x720"},
+     {"Full screen", "1080p (16:9)", "720p (lighter)", "4:3 (960x720)"}},
+#else
     {"Resolution", "resolution", {"1280x720", "1920x1080", "960x720", "640x480"}, {"720p", "1080p", "4:3 (960x720)", "4:3 (640x480)"}},
+#endif
     {"Game threads", "cores", {"3", "1"}, {"Three cores", "One core"}},
 };
 #define N_OPTS (int)(sizeof opts / sizeof *opts)
@@ -249,7 +264,7 @@ enum { IN_NONE, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_OK, IN_BACK };
 
 static int poll_input(void) {
     SDL_Event e;
-    while (SDL_PollEvent(&e)) {
+    while (rt_poll_event(&e)) {
         switch (e.type) {
         case SDL_QUIT: exit(0);
         case SDL_CONTROLLERDEVICEADDED: SDL_GameControllerOpen(e.cdevice.which); break;

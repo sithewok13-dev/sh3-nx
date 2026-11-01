@@ -16,6 +16,7 @@ void host_thread_resume(HostThread *t);
 void host_thread_signal(HostThread *t, int sig);  /* Linux debugging (SH3_DUMP_AFTER) */
 
 void *host_arena_reserve(void);                     /* 4 GB of address space for the guest */
+extern uint64_t host_arena_bytes;  /* how much of it host_arena_reserve got: 4 GB except on iOS, which may give less */
 void host_arena_commit(uint32_t va, uint32_t len);  /* backs [va, va+len) with zeroed memory */
 void host_crash_handlers(void (*on_crash)(uintptr_t addr));
 void host_backtrace(int fd);  /* host frames, where the platform can name them */

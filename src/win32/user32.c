@@ -66,9 +66,18 @@ SDL_Window *rt_window;
 static uint32_t wndproc;
 static int quit_posted;
 
+int rt_poll_event(SDL_Event *e) {
+#ifdef SH2_IOS
+    /* the main thread pumps (ios.c); pumping here would run UIKit's event loop off the main thread */
+    return SDL_PeepEvents(e, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) > 0;
+#else
+    return SDL_PollEvent(e);
+#endif
+}
+
 void rt_pump_events(void) {
     SDL_Event e;
-    while (SDL_PollEvent(&e))
+    while (rt_poll_event(&e))
         if (e.type == SDL_QUIT) { rt_log("window closed"); quit_posted = 1; }
 }
 
@@ -81,13 +90,24 @@ WINAPI(RegisterClassExA, "RegisterClassExA", 1) {
 void rt_window_open(void) {
     if (!rt_window) {
         SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");  /* let SIGTERM/SIGINT stop the port */
+#ifdef SH2_IOS
+        SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+        SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");  /* dimmed; a swipe still reaches it */
+        SDL_SetHint(SDL_HINT_AUDIO_CATEGORY, "playback");     /* sound with the ring/silent switch on silent too */
+#endif
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER))
             rt_fatal("SDL_Init: %s", SDL_GetError());
         /* A scripted run (SH3_KEYS) stays off screen, unless SH3_SHOW is set to watch it: either way it
          * never reads the real keyboard. */
+#ifdef SH2_IOS
+        /* the whole screen at its full pixel resolution (ALLOW_HIGHDPI: otherwise UIKit points, a third of it) */
+        rt_window = SDL_CreateWindow("Silent Hill 3", 0, 0, 0, 0,
+                                     SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_BORDERLESS);
+#else
         rt_window = SDL_CreateWindow("Silent Hill 3", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720,
                                      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
                                          (getenv("SH3_KEYS") && !getenv("SH3_SHOW") ? SDL_WINDOW_HIDDEN : 0));
+#endif
         if (!rt_window) rt_fatal("SDL_CreateWindow: %s", SDL_GetError());
     }
 }

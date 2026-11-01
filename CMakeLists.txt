@@ -20,7 +20,25 @@ set_source_files_properties(src/d3d8/launcher.c PROPERTIES COMPILE_DEFINITIONS
                             "SRC_DIR=\"${CMAKE_SOURCE_DIR}\";SPLASH_SHA1=\"${SPLASH_SHA1}\""
                             OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/splash.bmp;${CMAKE_SOURCE_DIR}/assets/logo.bmp;${CMAKE_SOURCE_DIR}/assets/font.bmp")
 
-if(NINTENDO_SWITCH)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  # An iPhone/iPad app (tools/ios/build.sh): OpenGL ES 3.0 and a static SDL2 from tools/ios/build-deps.sh.
+  # The bundle is unsigned: SideStore, AltStore or Sideloadly sign it on install.
+  set(SH2_IOS_DEPS "${CMAKE_SOURCE_DIR}/build/ios-deps" CACHE PATH "SDL2 built for iOS (tools/ios/build-deps.sh)")
+  target_compile_definitions(sh3 PRIVATE SH2_IOS SH2_GLES)
+  target_include_directories(sh3 PRIVATE ${SH2_IOS_DEPS}/include)
+  target_link_libraries(sh3 PRIVATE ${SH2_IOS_DEPS}/lib/libSDL2main.a ${SH2_IOS_DEPS}/lib/libSDL2.a iconv m
+    "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreBluetooth"
+    "-framework CoreFoundation" "-framework CoreGraphics" "-framework CoreHaptics" "-framework CoreMotion"
+    "-framework Foundation" "-framework GameController" "-framework Metal" "-framework OpenGLES"
+    "-framework QuartzCore" "-framework UIKit")
+  set(SH2_IOS_BUNDLE_ID "com.example.sh3-nx" CACHE STRING "The app's bundle identifier")
+  set(SH2_IOS_VERSION "0.06")
+  configure_file(ios/Info.plist.in ${CMAKE_BINARY_DIR}/Info.plist @ONLY)
+  set_target_properties(sh3 PROPERTIES
+    OUTPUT_NAME SH3
+    MACOSX_BUNDLE ON
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_BINARY_DIR}/Info.plist)
+elseif(NINTENDO_SWITCH)
   # Built with the devkitPro toolchain (tools/build-switch.sh); OpenGL comes through EGL and mesa.
   target_include_directories(sh3 PRIVATE ${DEVKITPRO}/portlibs/switch/include)
   target_link_libraries(sh3 PRIVATE SDL2 EGL glapi drm_nouveau stdc++ pthread m)

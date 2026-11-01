@@ -1,0 +1,35 @@
+# The iOS port's checks. No game files are involved: the generated game code needs your own sh3.exe, so
+# the iOS job compiles every hand-written source with Apple's SDK, and the Linux job renders the D3D8 test
+# scenes with desktop GL and OpenGL ES (tests/run-render-test.sh).
+name: iOS
+on:
+  push:
+    branches: [ios]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ios-compile:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: build/ios-deps
+          key: ios-deps-${{ hashFiles('tools/ios/build-deps.sh') }}
+      - name: SDL2 for iOS
+        run: tools/ios/build-deps.sh
+      - name: Compile for iOS arm64
+        run: tools/ios/compile-check.sh
+
+  render-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsdl2-dev libavformat-dev libavcodec-dev libswscale-dev \
+            libswresample-dev libavutil-dev libgles-dev libegl-dev libgl1-mesa-dri
+      - name: Desktop GL and OpenGL ES render the same
+        run: CC=clang tests/run-render-test.sh

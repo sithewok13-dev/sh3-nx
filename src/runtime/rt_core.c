@@ -4,6 +4,9 @@
 #include <pthread.h>
 #include <unistd.h>
 #include "host.h"
+#ifdef SH2_IOS
+#include <SDL2/SDL.h>  /* its SDL_main.h renames main(): SDL's UIKit app delegate calls it on the main thread */
+#endif
 #ifdef __SWITCH__
 #include <switch.h>
 #include <netinet/in.h>  /* __nxlink_host */
@@ -47,8 +50,8 @@ void rt_log(const char *fmt, ...) {
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
-#ifdef __SWITCH__
-    static FILE *log;  /* no console on the Switch: sh3.log in the game folder */
+#if defined(__SWITCH__) || defined(SH2_IOS)
+    static FILE *log;  /* no console on the Switch or a phone: sh3.log in the game folder */
     if (!log) log = fopen("sh3.log", "w");
     if (log) {
         va_start(ap, fmt);
@@ -139,7 +142,11 @@ uint32_t galloc(uint32_t size) {
     uint32_t blk = free_head[cls];
     if (blk) free_head[cls] = ((BlockHdr *)GPTR(blk))->pad;  /* the free list links through the header */
     else {
-        if ((uint64_t)heap_top + (1ull << cls) > HEAP_HI) rt_fatal("guest heap exhausted (%u bytes)", size);
+        /* The heap ends where the arena does: below 4 GB where the platform would not reserve it all (iOS). */
+        uint64_t hi = host_arena_bytes < HEAP_HI ? host_arena_bytes : HEAP_HI;
+        if ((uint64_t)heap_top + (1ull << cls) > hi)
+            rt_fatal("guest heap exhausted (%u bytes asked, %u MB used, arena %u MB)", size, (heap_top - HEAP_LO) >> 20,
+                     (unsigned)(host_arena_bytes >> 20));
         blk = heap_top;
         heap_top += 1u << cls;
         if (heap_top > heap_committed) {
@@ -402,10 +409,9 @@ void recomp_cpuid(void) {
 /* ---- loading sh3.exe at its own addresses ---- */
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
-extern const Bridge __start_game_bridges[], __stop_game_bridges[];
 
 static recomp_func_t find_bridge(const char *name) {
-    for (const Bridge *b = __start_game_bridges; b < __stop_game_bridges; b++)
+    for (const Bridge *b = rt_bridges_begin; b < rt_bridges_end; b++)
         if (!strcmp(b->name, name)) return b->fn;
     return NULL;
 }
@@ -465,9 +471,16 @@ static void read_ini(void) {
     FILE *ini = fopen("sh3.ini", "r");
     char line[128];
     unsigned a, b, cores = 3;
+#ifdef SH2_IOS
+    int screen = 1;  /* "resolution = screen", the default on a phone: see below */
+#endif
     while (ini && fgets(line, sizeof line, ini)) {
-        if (sscanf(line, " resolution = %ux%u", &a, &b) == 2 && a >= 320 && b >= 240 && a <= 1920 && b <= 1440)
+        if (sscanf(line, " resolution = %ux%u", &a, &b) == 2 && a >= 320 && b >= 240 && a <= 1920 && b <= 1440) {
             rt_res_w = a, rt_res_h = b;
+#ifdef SH2_IOS
+            screen = 0;
+#endif
+        }
         if (sscanf(line, " cores = %u", &a) == 1) cores = a;
         if (sscanf(line, " trace = %u", &a) == 1) rt_trace = a;
 #ifdef __SWITCH__
@@ -475,6 +488,18 @@ static void read_ini(void) {
 #endif
     }
     if (ini) fclose(ini);
+#ifdef SH2_IOS
+    /* The phone's own shape (19.5:9 on most iPhones) at the widest the game is run at, 1920: the image fills
+     * the screen with no bars, and Present scales it to the panel's full pixel resolution. */
+    int sw, sh;
+    ios_screen_size(&sw, &sh);
+    if (screen && sw > 0 && sh > 0) {
+        rt_res_w = sw < 1920 ? (uint32_t)sw : 1920;
+        rt_res_h = ((uint32_t)((uint64_t)rt_res_w * sh / sw) + 1) & ~1u;
+        if (rt_res_h < 240) rt_res_h = 240;
+        rt_log("resolution follows the %dx%d screen: %ux%u", sw, sh, rt_res_w, rt_res_h);
+    }
+#endif
     host_use_single_core(cores >= 3 ? -1 : 0);
 }
 
@@ -506,6 +531,9 @@ int main(int argc, char **argv) {
         if (nxlinkStdio() >= 0) log_on = 1;
         else socketExit();
     }
+#elif defined(SH2_IOS)
+    const char *dir = ios_game_dir();  /* Documents: filled through the Files app; sh3.log is written there */
+    (void)argc; (void)argv;
 #else
     const char *dir = argc > 1 ? argv[1] : getenv("SH3_DIR");
 #endif
@@ -515,9 +543,16 @@ int main(int argc, char **argv) {
     if (getenv("SH3_COVER")) cover_from = abs(atoi(getenv("SH3_COVER"))), cover_all = atoi(getenv("SH3_COVER")) < 0;
     if (getenv("SH3_ORACLE")) sscanf(getenv("SH3_ORACLE"), "%x,%u", &oracle_va, &oracle_nth);
 
+#ifdef SH2_IOS
+    ios_main_start();             /* window and GL context belong to the main thread on iOS */
+    ios_require_file("sh3.exe");
+#endif
     host_crash_handlers(on_crash);
     arena_init();
     recomp_dispatch_init();
     host_thread_start(game_thread, NULL, 16u << 20);
+#ifdef SH2_IOS
+    ios_main_loop();
+#endif
     for (;;) sleep(1000);
 }
