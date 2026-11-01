@@ -23,6 +23,8 @@ STUB void game_init(void) {}
 STUB void launcher_run(void) {}
 STUB void ee_file_opened(const char *guest, FILE *f) { (void)guest; (void)f; }
 STUB uint32_t ee_rumble_gain(uint32_t magnitude) { return magnitude; }
+STUB void cheat_tick(void) {}
+STUB void controls_tick(void) {}
 
 /* ---- calls into the layer ---- */
 static uint32_t call_bridge(const char *name, int n, const uint32_t *a) {
