@@ -26,7 +26,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   set(SH2_IOS_DEPS "${CMAKE_SOURCE_DIR}/build/ios-deps" CACHE PATH "SDL2 built for iOS (tools/ios/build-deps.sh)")
   target_compile_definitions(sh3 PRIVATE SH2_IOS SH2_GLES)
   target_include_directories(sh3 PRIVATE ${SH2_IOS_DEPS}/include)
-  target_link_libraries(sh3 PRIVATE ${SH2_IOS_DEPS}/lib/libSDL2main.a ${SH2_IOS_DEPS}/lib/libSDL2.a iconv m
+  target_link_libraries(sh3 PRIVATE ${SH2_IOS_DEPS}/lib/libSDL2main.a ${SH2_IOS_DEPS}/lib/libSDL2.a iconv m z
     "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreBluetooth"
     "-framework CoreFoundation" "-framework CoreGraphics" "-framework CoreHaptics" "-framework CoreMotion"
     "-framework Foundation" "-framework GameController" "-framework Metal" "-framework OpenGLES"
