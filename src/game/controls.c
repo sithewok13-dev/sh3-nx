@@ -21,3 +21,8 @@ void controls_tick(void) {
     uint8_t want = classic ? 0 : 1;
     if (MEM8(CONTROL_TYPE) != want) MEM8(CONTROL_TYPE) = want;
 }
+
+/* The flashlight's switch, for the touch overlay's LIGHT picture: the byte at 0x1F7A806 (SH2EE's
+ * GetFlashlightSwitchPointer: 0x29 bytes past the pattern at 0x43ED25), flipped by the light's button
+ * (sub_0048E800) and set at a new game (sub_0049EE10). */
+int game_flashlight_on(void) { return MEM8(0x01F7A806u) != 0; }

@@ -25,8 +25,10 @@ void cheat_set(int on) { cheat = on; }
 int cheat_get(void) { return cheat; }
 void controls_set_classic(int on) { classic = on; }
 int game_cursor_shown(void) { return cursor; }
+static int light;
+int game_flashlight_on(void) { return light; }
 
-enum { B_FIRE, B_AIM, B_ACTION, B_RUN, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA };
+enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA };
 enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS };
 
 static int W = 1280, H = 590, failures;
@@ -101,11 +103,8 @@ int main(int argc, char **argv) {
     press(1, B_AIM);
     check("AIM pulls RT alone", axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 30000 && !btn(SDL_CONTROLLER_BUTTON_A));
     finger(SDL_FINGERUP, 1, 0, 0);
-    press(1, B_RUN);
-    check("RUN is X", btn(SDL_CONTROLLER_BUTTON_X));
-    finger(SDL_FINGERUP, 1, 0, 0);
     press(1, B_LIGHT);
-    check("LIGHT is B", btn(SDL_CONTROLLER_BUTTON_B));
+    check("LIGHT (top left) is B", btn(SDL_CONTROLLER_BUTTON_B));
     finger(SDL_FINGERUP, 1, 0, 0);
     press(1, B_MAP);
     check("MAP is Y", btn(SDL_CONTROLLER_BUTTON_Y));
@@ -125,8 +124,16 @@ int main(int argc, char **argv) {
     check("past it, part way right", part > 13000 && part < 19000);
     finger(SDL_FINGERMOTION, 5, sx + 200, sy);
     check("a long push is full right", axis(SDL_CONTROLLER_AXIS_LEFTX) > 32000 && abs(axis(SDL_CONTROLLER_AXIS_LEFTY)) < 100);
-    finger(SDL_FINGERMOTION, 5, sx, sy - 100);
-    check("on the run marker: straight ahead, running", axis(SDL_CONTROLLER_AXIS_LEFTY) < -32000 && btn(SDL_CONTROLLER_BUTTON_X));
+    check("pushed sideways, walking", !btn(SDL_CONTROLLER_BUTTON_X));
+    float rx, ry;
+    touch_running(&rx, &ry);
+    check("the run marker sits up to 100 pt above the stick", fabsf(rx - sx) < 1 && sy - ry >= 76 && sy - ry <= 100);
+    finger(SDL_FINGERMOTION, 5, sx, sy - 50);
+    check("pushed forward 50 pt, walking", !btn(SDL_CONTROLLER_BUTTON_X) && axis(SDL_CONTROLLER_AXIS_LEFTY) < -20000);
+    finger(SDL_FINGERMOTION, 5, sx + 20, sy - 75);
+    check("pushed on toward the marker, running (X held)", btn(SDL_CONTROLLER_BUTTON_X) && touch_running(&rx, &ry));
+    finger(SDL_FINGERMOTION, 5, sx, sy - 65);
+    check("eased back a little, still running", btn(SDL_CONTROLLER_BUTTON_X));
     finger(SDL_FINGERMOTION, 5, sx + 200, sy);
     check("off it, walking again", !btn(SDL_CONTROLLER_BUTTON_X));
 
@@ -144,13 +151,30 @@ int main(int argc, char **argv) {
     check("a drag on FIRE looks too, and keeps firing", axis(SDL_CONTROLLER_AXIS_RIGHTX) < -20000 && btn(SDL_CONTROLLER_BUTTON_A));
     finger(SDL_FINGERMOTION, 7, fx, fy);
 
-    /* the picture: stick and FIRE held */
+    /* the picture: the stick pushed onto the run marker, FIRE held, the flashlight on */
+    light = 1;
+    finger(SDL_FINGERMOTION, 5, sx, sy - 80);
     glClearColor(0.25f, 0.27f, 0.3f, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     GLint prog_before = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &prog_before);
     glViewport(10, 20, 30, 40);
+    /* the D3D8 layer keeps its own frame bound for reading while it draws to the window: the overlay must leave
+     * it so (a read framebuffer reset to the window turned every frame black on the phone) */
+    GLuint frame_fbo, frame_tex;
+    glGenTextures(1, &frame_tex);
+    glBindTexture(GL_TEXTURE_2D, frame_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &frame_fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, frame_fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, frame_tex, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
     touch_draw();
+    GLint read_after = -1, draw_after = -1;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_after);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_after);
+    check("the game's read framebuffer is left bound", read_after == (GLint)frame_fbo && draw_after == 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     GLint vp[4], prog_after;
     glGetIntegerv(GL_VIEWPORT, vp);
     glGetIntegerv(GL_CURRENT_PROGRAM, &prog_after);
@@ -160,7 +184,7 @@ int main(int argc, char **argv) {
     float mx, my;
     at(B_MENU, &mx, &my);
     check("FIRE, MENU and the stick are drawn", pixel_differs(fx + 30, fy, bg) && pixel_differs(mx + 18, my, bg) &&
-                                                   pixel_differs(sx + 60, sy, bg));
+                                                   pixel_differs(sx + 59, sy, bg));
     shot(out, "touch.ppm");
     finger(SDL_FINGERUP, 7, 0, 0);
     finger(SDL_FINGERUP, 5, 0, 0);
@@ -272,8 +296,8 @@ int main(int argc, char **argv) {
     added.type = SDL_CONTROLLERDEVICEADDED;
     added.cdevice.which = real;
     touch_event(&added);
-    press(8, B_LIGHT);
-    check("with a controller attached, touches press nothing", !btn(SDL_CONTROLLER_BUTTON_B));
+    press(8, B_AIM);
+    check("with a controller attached, touches press nothing", axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) == 0);
     check("and the other pad is not ours", !touch_is_virtual_pad(real));
     remove("touch.cfg");
     printf(failures ? "%d FAILED\n" : "PASS\n", failures);

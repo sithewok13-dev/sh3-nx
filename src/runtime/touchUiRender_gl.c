@@ -437,7 +437,7 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
     if (!pList || pList->numItems <= 0 || pxW <= 0 || pxH <= 0) return;
 
     // The GL state this changes, to put back
-    GLint prog, vao, abuf, tex, activeTex, fb, vp[4], bsrc, bdst, bsrcA, bdstA, beq, beqA, unpack;
+    GLint prog, vao, abuf, tex, activeTex, fb, readFb, vp[4], bsrc, bdst, bsrcA, bdstA, beq, beqA, unpack;
     GLboolean bBlend, bDepth, bCull, bScissor, bStencil, cmask[4], dmask;
     glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
@@ -445,7 +445,9 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
     glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTex);
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    /* the draw and read framebuffers apart: the D3D8 layer keeps its frame bound for reading (sh2-nx) */
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
     glGetIntegerv(GL_VIEWPORT, vp);
     glGetIntegerv(GL_BLEND_SRC_RGB, &bsrc);
     glGetIntegerv(GL_BLEND_DST_RGB, &bdst);
@@ -466,7 +468,7 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
         tr.numVtx = tr.numIdx = 0;
         for (int i = 0; i < pList->numItems; i++) tr_Item(pList, &pList->aItems[i], pxPerPt);
 
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
         glViewport(0, 0, pxW, pxH);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
@@ -493,7 +495,8 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
     glUseProgram((GLuint)prog);
     glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
     glActiveTexture((GLenum)activeTex);
-    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fb);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)fb);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)readFb);
     glViewport(vp[0], vp[1], vp[2], vp[3]);
     glBlendFuncSeparate((GLenum)bsrc, (GLenum)bdst, (GLenum)bsrcA, (GLenum)bdstA);
     glBlendEquationSeparate((GLenum)beq, (GLenum)beqA);
@@ -520,13 +523,13 @@ unsigned char* touchUiRender_ReadRGBA(unsigned int fbo, int w, int h)
     }
     while (glGetError() != GL_NO_ERROR) {} // (not ours)
     GLint oldFbo = 0, oldPack = 4;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &oldFbo);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &oldFbo);
     glGetIntegerv(GL_PACK_ALIGNMENT, &oldPack);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, p);
     const int bOk = glGetError() == GL_NO_ERROR;
-    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)oldFbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)oldFbo);
     glPixelStorei(GL_PACK_ALIGNMENT, oldPack);
     if (!bOk) {
         free(p);

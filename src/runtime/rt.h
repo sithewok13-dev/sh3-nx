@@ -110,6 +110,8 @@ void cheat_tick(void);                        /* game thread, every presented fr
 void controls_set_classic(int on);            /* game/controls.c: the original controls instead of modern */
 void controls_tick(void);                     /* game thread, every presented frame */
 int game_cursor_shown(void);                  /* dinput.c: the game shows its mouse cursor (a menu) */
+int game_flashlight_on(void);                 /* game/controls.c: the flashlight is on */
+int touch_running(float *x, float *y);       /* tests: the stick is on the run marker (and where it is) */
 void touch_save_photo(const unsigned char *rgba, int w, int h);  /* CAMERA: top row first; ios_photos.m */
 void touch_control_center(int b, float *x, float *y);           /* tests: a control's center in pixels */                     /* dinput.c: a tap with no cursor to click confirms */
 #endif

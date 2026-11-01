@@ -7,13 +7,13 @@
  * (ios.c's event watch), the overlay is drawn on the game thread over each presented frame (touch_draw).
  * Sizes are in points (the window's units on iOS), times in milliseconds.
  *
- *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone), with the run marker 100 pt
- *                above it: pushed onto it, James runs straight ahead
+ *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone), and the Jedi Knight port's
+ *                run marker (a double arrow) up to 100 pt above it: pushed 70 pt toward it, James runs
  *   elsewhere    a drag looks (the right stick: the search view); a quick tap is a mouse click where the game
  *                shows its cursor (dinput.c), else ACTION
- *   bottom right FIRE (aim and attack), the arc AIM / ACTION / RUN round it, LIGHT beside them; a drag on any of
- *                them looks too
- *   top left     MAP, ITEMS            top right  MENU, the FPS readout left of it, CAMERA (when on) further left
+ *   bottom right FIRE (aim and attack), AIM and ACTION round it; a drag on any of them looks too
+ *   top left     MAP, ITEMS, the flashlight (its picture lit while the light is on)
+ *                                      top right  MENU, the FPS readout left of it, CAMERA (when on) further left
  *   MENU         a tap pauses (or skips: the pad's Back); held 0.45 s, the tray opens under it:
  *                SENS, GYRO, OPACITY, FPS, CAMERA, CHEAT, CONTROLS, and the app's version below
  * While the game shows its mouse cursor (its menus), only the top row shows and a touch is a click. */
@@ -38,8 +38,13 @@
 #define KNOB_R       24.0f
 #define STICK_DEAD   0.30f
 #define STICK_SIDE   0.42f  /* of the width */
-#define RUN_ABOVE    100.0f
-#define RUN_R        24.0f
+#define RUN_R        15.0f  /* the run marker (Jedi Knight's touchUi.c TU_RUN_*) */
+#define RUN_DIST     100.0f
+#define RUN_MIN_DIST 76.0f
+#define RUN_ON       70.0f  /* pushed this far toward it, running; under RUN_OFF, walking again */
+#define RUN_OFF      60.0f
+#define RUN_CONE     30.0f  /* degrees either side of the marker (RUN_CONE_OFF while running) */
+#define RUN_CONE_OFF 40.0f
 #define LOOK_R       60.0f  /* a look drag this long is the right stick's full tilt */
 #define FIRE_R       42.0f
 #define ARC_DIST     115.0f
@@ -53,9 +58,9 @@
 
 /* the pad, numbered as SDL's buttons; the triggers are axes */
 enum { P_A, P_B, P_X, P_Y, P_BACK, P_START, P_RT, N_PAD };
-enum { B_FIRE, B_AIM, B_ACTION, B_RUN, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, N_BTN };
-static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "RUN", "LIGHT", "MAP", "ITEMS", "MENU", "CAMERA"};
-static const int btn_cluster[N_BTN] = {1, 1, 1, 1, 1, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
+enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, N_BTN };
+static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA"};
+static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
 enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
 
 enum { GYRO_OFF, GYRO_TOUCH, GYRO_ALWAYS };
@@ -95,7 +100,10 @@ static struct {
     SDL_Sensor *gyro_sensor;
     float gyro_x, gyro_y;           /* the latest tilt, as right-stick tilt */
     float fps;
-    int runs;                       /* the stick is on the run marker */
+    int runs;                       /* the stick is pushed onto the run marker */
+    int run_marker;                 /* placed (there was room above the stick) */
+    float run_x, run_y, run_deg;    /* where, and its direction from the stick (degrees, counter-clockwise) */
+    atomic_int light;               /* the flashlight is on (touch_draw reads the game) */
 } T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1};
 
 /* ---- settings ---- */
@@ -129,11 +137,10 @@ static Circle button_at(int b) {
     float fx = W - ix - FIRE_R - 6.0f, fy = H - 18.0f - FIRE_R;
     switch (b) {
     case B_FIRE: return (Circle){fx, fy, FIRE_R};
-    /* the arc of three round FIRE, left, up-left and up */
+    /* round FIRE: AIM to the left, ACTION up and to the left */
     case B_AIM: return (Circle){fx - ARC_DIST, fy + 4.0f, 29.0f};
-    case B_ACTION: return (Circle){fx - ARC_DIST * 0.72f, fy - ARC_DIST * 0.72f, 31.0f};
-    case B_RUN: return (Circle){fx + 4.0f, fy - ARC_DIST, 29.0f};
-    case B_LIGHT: return (Circle){fx - ARC_DIST - 29.0f - 30.0f - 28.0f, fy + 10.0f, 28.0f};
+    case B_ACTION: return (Circle){fx - ARC_DIST * 0.62f, fy - ARC_DIST * 0.85f, 31.0f};
+    case B_LIGHT: return (Circle){ix + TOP_R + 2 * (2 * TOP_R + 14.0f), top, TOP_R};
     case B_MAP: return (Circle){ix + TOP_R, top, TOP_R};
     case B_ITEMS: return (Circle){ix + TOP_R + 2 * TOP_R + 14.0f, top, TOP_R};
     case B_MENU: return (Circle){W - ix - TOP_R, top, TOP_R};
@@ -147,7 +154,7 @@ static Circle tray_at(int t) {
 }
 static int shown(int b) {
     if (b == B_CAMERA) return T.camera;
-    if (b == B_MAP || b == B_ITEMS || b == B_MENU) return 1;
+    if (b == B_MAP || b == B_ITEMS || b == B_MENU || b == B_LIGHT) return 1;
     return !atomic_load(&T.cursor);  /* the cluster: only in play */
 }
 
@@ -169,6 +176,35 @@ static int tray_hit(float x, float y) {
         if (hypotf(x - c.x, y - c.y) < c.r + SLOP) return t;
     }
     return -1;
+}
+
+/* ---- the run marker, as the Jedi Knight port places it (tu_PlaceRunMarker): straight above the stick, as far
+ * as 100 pt (no nearer than 76) where it is clear of the top and of every button ---- */
+static void place_run_marker(float ox, float oy) {
+    T.run_marker = T.runs = 0;
+    float x = fmaxf(ox, inset_x() + 4 + RUN_R), min_y = 4 + RUN_R;
+    x = fminf(x, T.w - inset_x() - 4 - RUN_R);
+    for (float h = RUN_DIST; h >= RUN_MIN_DIST; h -= 2) {
+        float y = oy - h;
+        int clear = y >= min_y;
+        for (int b = 0; b < N_BTN && clear; b++) {
+            if (!shown(b)) continue;
+            Circle c = button_at(b);
+            clear = hypotf(x - c.x, y - c.y) >= c.r + RUN_R + 4;
+        }
+        if (!clear) continue;
+        T.run_marker = 1, T.run_x = x, T.run_y = y;
+        T.run_deg = atan2f(h, x - ox) * 57.29578f;
+        return;
+    }
+}
+/* Pushed far enough toward the marker, and within its cone (wider once running, so it doesn't flicker). */
+static int on_run_marker(float px, float py, float ox, float oy) {
+    if (!T.run_marker) return 0;
+    float dx = px - ox, dy = oy - py, d = hypotf(dx, dy);
+    if (d < (T.runs ? RUN_OFF : RUN_ON)) return 0;
+    float off = fabsf(fmodf(atan2f(dy, dx) * 57.29578f - T.run_deg + 540.0f, 360.0f) - 180.0f);
+    return off <= (T.runs ? RUN_CONE_OFF : RUN_CONE);
 }
 
 /* ---- the pad ---- */
@@ -193,19 +229,14 @@ static void apply(void) {
     if (!T.joy) return;
     int pad[N_PAD] = {0}, held[N_BTN] = {0};
     float lx = 0, ly = 0, rx = 0, ry = 0;
-    T.runs = 0;
+    int runs = 0;
     for (int i = 0; i < MAX_FINGERS; i++) {
         float dx = T.f[i].x - T.f[i].ox, dy = T.f[i].y - T.f[i].oy, tx, ty;
         switch (T.f[i].kind) {
         case F_STICK:
-            if (hypotf(T.f[i].x - T.f[i].ox, T.f[i].y - (T.f[i].oy - RUN_ABOVE)) < RUN_R + SLOP) {
-                T.runs = 1;  /* on the run marker: straight ahead, running */
-                lx = 0, ly = -1;
-                pad[P_X] = 1;
-            } else {
-                stick_tilt(dx, dy, STICK_R, STICK_DEAD, &tx, &ty);
-                lx = tx, ly = ty;
-            }
+            stick_tilt(dx, dy, STICK_R, STICK_DEAD, &tx, &ty);
+            lx = tx, ly = ty;
+            if (on_run_marker(T.f[i].x, T.f[i].y, T.f[i].ox, T.f[i].oy)) runs = 1, pad[P_X] = 1;  /* run: hold X */
             break;
         case F_LOOK:
             stick_tilt(dx, dy, LOOK_R, 0.05f, &tx, &ty);
@@ -227,10 +258,10 @@ static void apply(void) {
     if (held[B_FIRE]) pad[P_RT] = pad[P_A] = 1;  /* FIRE: aim and attack */
     if (held[B_AIM]) pad[P_RT] = 1;
     if (held[B_ACTION]) pad[P_A] = 1;
-    if (held[B_RUN]) pad[P_X] = 1;
     if (held[B_LIGHT]) pad[P_B] = 1;
     if (held[B_MAP]) pad[P_Y] = 1;
     if (held[B_ITEMS]) pad[P_START] = 1;
+    T.runs = runs;
     if (T.a_release) pad[P_A] = 1;
     if (T.back_release) pad[P_BACK] = 1;
     memcpy(T.held, held, sizeof held);
@@ -353,6 +384,7 @@ void touch_event(const SDL_Event *e) {
                 kind = x < T.w * STICK_SIDE ? F_STICK : F_LOOK;
                 for (int i = 0; i < MAX_FINGERS; i++)  /* a second finger on the stick's side looks */
                     if (kind == F_STICK && T.f[i].kind == F_STICK) kind = F_LOOK;
+                if (kind == F_STICK) place_run_marker(x, y);
             }
             T.f[free_slot] = (typeof(T.f[0])){e->tfinger.fingerId, kind, idx, x, y, x, y, 0, SDL_GetTicks(), 0};
         } else if (slot >= 0 && e->type == SDL_FINGERMOTION) {
@@ -438,6 +470,14 @@ void touch_set_tap_confirm(int on) {
 }
 
 /* For the tests: a control's center, in pixels (b < 0: tray button -b-1). */
+int touch_running(float *x, float *y) {
+    pthread_mutex_lock(&T.mx);
+    int r = T.runs;
+    *x = T.run_x * T.k, *y = T.run_y * T.k;
+    pthread_mutex_unlock(&T.mx);
+    return r;
+}
+
 void touch_control_center(int b, float *x, float *y) {
     pthread_mutex_lock(&T.mx);
     Circle c = b >= 0 ? button_at(b) : tray_at(-b - 1);
@@ -456,6 +496,27 @@ static void draw_button(Circle c, const char *label, int held, int lit, float al
     touchUiDraw_Text(&dl, label, c.x, c.y, size, 1.0f, lit ? blue : touchUi_White(0.95f));
 }
 
+/* LIGHT: a flashlight, its lens to the upper right; on, its beam is out and it is lit blue. */
+static void draw_flashlight(Circle c, int held, int on, float alpha) {
+    dl.alpha = alpha * (held ? 1.0f : IDLE_ALPHA);
+    touchUiDraw_Circle(&dl, c.x, c.y, c.r, on ? touchUi_Rgba(0.47f, 0.78f, 1.0f, 0.35f) : held ? touchUi_White(0.35f) : touchUi_Black(0.35f),
+                       2.0f, on ? blue : touchUi_White(0.85f));
+    touchUiColor ink = on ? touchUi_White(1.0f) : touchUi_White(0.9f);
+    /* drawn pointing right, then turned 35 degrees up: the handle, the wider head, the lens */
+    float ca = cosf(-0.61f), sa = sinf(-0.61f);
+    #define P(px, py) c.x + (px) * ca - (py) * sa, c.y + (px) * sa + (py) * ca
+    float body[] = {P(-11, -2.6f), P(1, -2.6f), P(1, 2.6f), P(-11, 2.6f)};
+    float head[] = {P(1, -2.6f), P(6, -5.5f), P(6, 5.5f), P(1, 2.6f)};
+    touchUiDraw_Polygon(&dl, body, 4, ink);
+    touchUiDraw_Polygon(&dl, head, 4, ink);
+    touchUiDraw_Line(&dl, P(7.2f, -5.5f), P(7.2f, 5.5f), 1.6f, on ? blue : touchUi_White(0.6f));
+    if (on)  /* the beam */
+        for (int i = -1; i <= 1; i++) touchUiDraw_Line(&dl, P(10, i * 4.0f), P(15, i * 7.0f), 1.6f, blue);
+    else     /* the switch */
+        touchUiDraw_Circle(&dl, P(-5, 0), 1.3f, touchUi_Black(0.8f), 0, touchUi_Clear());
+    #undef P
+}
+
 static void build(Uint32 now) {
     touchUiDraw_Begin(&dl);
     float alpha = opacity_steps[T.opacity];
@@ -465,7 +526,8 @@ static void build(Uint32 now) {
         if (!shown(b)) continue;
         Circle c = button_at(b);
         float size = c.r >= 40 ? 15.0f : c.r >= 28 ? (strlen(btn_label[b]) > 4 ? 10.0f : 11.5f) : 8.5f;
-        draw_button(c, btn_label[b], T.held[b], b == B_RUN && T.runs, alpha, size);
+        if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light), alpha);
+        else draw_button(c, btn_label[b], T.held[b], 0, alpha, size);
     }
     /* MENU's hold ring */
     for (int i = 0; i < MAX_FINGERS; i++)
@@ -480,12 +542,33 @@ static void build(Uint32 now) {
         if (T.f[i].kind != F_STICK) continue;
         float ox = T.f[i].ox, oy = T.f[i].oy, dx = T.f[i].x - ox, dy = T.f[i].y - oy, len = hypotf(dx, dy);
         if (len > STICK_R) dx *= STICK_R / len, dy *= STICK_R / len;
+        /* as the Jedi Knight port draws it (tu_DrawStick): the ring, a line to the marker, the knob on the marker
+         * while running, the marker's double arrow */
+        int lit = T.runs;
         dl.alpha = alpha;
-        touchUiDraw_Circle(&dl, ox, oy, STICK_R, touchUi_Black(0.25f), 2.0f, touchUi_White(0.6f));
-        touchUiDraw_Circle(&dl, ox + (T.runs ? 0 : dx), oy + (T.runs ? -STICK_R : dy), KNOB_R, touchUi_White(0.55f), 0, touchUi_Clear());
-        touchUiDraw_Circle(&dl, ox, oy - RUN_ABOVE, RUN_R, T.runs ? touchUi_Rgba(0.47f, 0.78f, 1.0f, 0.5f) : touchUi_Black(0.3f),
-                           2.0f, T.runs ? blue : touchUi_White(0.5f));
-        touchUiDraw_Text(&dl, "RUN", ox, oy - RUN_ABOVE, 8.0f, 1.0f, touchUi_White(0.9f));
+        touchUiDraw_Circle(&dl, ox, oy, STICK_R, touchUi_White(0.08f), 1.5f, touchUi_White(0.45f));
+        if (T.run_marker) {
+            float mx = T.run_x - ox, my = T.run_y - oy, d = hypotf(mx, my);
+            if (d - RUN_R - STICK_R > 1) {
+                dl.alpha = (lit ? 1 : IDLE_ALPHA) * alpha;
+                touchUiDraw_Line(&dl, ox + mx / d * STICK_R, oy + my / d * STICK_R, ox + mx / d * (d - RUN_R),
+                                 oy + my / d * (d - RUN_R), 1.5f, lit ? blue : touchUi_White(0.45f));
+            }
+        }
+        dl.alpha = alpha;
+        touchUiDraw_Circle(&dl, lit ? T.run_x : ox + dx, lit ? T.run_y : oy + dy, KNOB_R, touchUi_White(0.30f), 1.5f,
+                           touchUi_White(0.45f));
+        if (T.run_marker) {
+            dl.alpha = (lit ? 1 : IDLE_ALPHA) * alpha;
+            touchUiDraw_Circle(&dl, T.run_x, T.run_y, RUN_R, lit ? touchUi_Rgba(0.47f, 0.78f, 1.0f, 0.55f) : touchUi_Black(0.35f),
+                               1.5f, touchUi_White(lit ? 0.85f : 0.45f));
+            touchUiColor cc = touchUi_White(lit ? 1.0f : 0.85f);
+            for (int j = 0; j < 2; j++) {
+                float tip = -5.5f + 5.5f * j;
+                touchUiDraw_Line(&dl, T.run_x - 6, T.run_y + tip + 5, T.run_x, T.run_y + tip, 2.0f, cc);
+                touchUiDraw_Line(&dl, T.run_x, T.run_y + tip, T.run_x + 6, T.run_y + tip + 5, 2.0f, cc);
+            }
+        }
     }
     if (T.show_fps) {
         Circle m = button_at(B_MENU);
@@ -545,6 +628,7 @@ void touch_draw(void) {
         frames = 0, fps_at = now;
     }
     atomic_store(&T.cursor, game_cursor_shown());
+    atomic_store(&T.light, game_flashlight_on());
     pthread_mutex_lock(&T.mx);
     if (!T.visible || !T.pw) { pthread_mutex_unlock(&T.mx); return; }
     int shot = T.shot, pw = T.pw, ph = T.ph;
