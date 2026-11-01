@@ -18,11 +18,16 @@
 #include <stdatomic.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <dirent.h>
+#include "unzip.h"
 
 void gl_context_open(void);  /* d3d8.c */
 
 #ifndef IOS_APP_FOLDER
 #define IOS_APP_FOLDER "Silent Hill 3"  /* the app's name, as the Files app lists its folder */
+#endif
+#ifndef IOS_ZIP_PREFIX
+#define IOS_ZIP_PREFIX "SH3-game"       /* the build's game-file zips: SH3-game-1.zip, SH3-game-2.zip... */
 #endif
 
 static pthread_mutex_t gate_mx = PTHREAD_MUTEX_INITIALIZER;
@@ -46,8 +51,9 @@ void ios_require_file(const char *name) {
     if (!stat(name, &st)) return;
     char msg[1024];
     snprintf(msg, sizeof msg,
-             "%s is not in the app's folder.\n\nCopy your PC game folder's contents (with the Enhanced Edition files) "
-             "into Files > On My iPhone > %s, so that %s sits at the top, then start the app again.",
+             "%s is not in the app's folder.\n\nSave the " IOS_ZIP_PREFIX "-1.zip, -2.zip... files from your build into "
+             "Files > On My iPhone > %s and start the app again: it unpacks them itself. (Or copy your game folder's "
+             "contents there, so that %s sits at the top.)",
              name, IOS_APP_FOLDER, name);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Game files needed", msg, NULL);
     exit(0);
@@ -89,10 +95,90 @@ static int SDLCALL app_events(void *unused, SDL_Event *e) {
     return 1;
 }
 
+/* ---- the game files, delivered as zips ----
+ * A download is limited to 2 GB, so the build packs the game folder into SH3-game-1.zip, SH3-game-2.zip...
+ * Saved into the app's folder (Files > On My iPhone > the app), they are unpacked here on the next launch, with a
+ * progress bar, and deleted once unpacked. */
+typedef struct { uint64_t total; Uint64 last_draw; } ImportProgress;
+
+static void draw_progress(uint64_t done, void *ctx) {
+    ImportProgress *p = ctx;
+    Uint64 now = SDL_GetTicks64();
+    if (now - p->last_draw < 100 && done < p->total) return;
+    p->last_draw = now;
+    int w, h;
+    SDL_GL_GetDrawableSize(rt_window, &w, &h);
+    glBindFramebuffer(GL_FRAMEBUFFER, gl_screen_fbo());
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    /* a bar across the middle: its frame, then the part done */
+    int bw = w * 6 / 10, bh = h / 30 + 2, bx = (w - bw) / 2, by = (h - bh) / 2, edge = bh / 8 + 1;
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(bx - edge, by - edge, bw + 2 * edge, bh + 2 * edge);
+    glClearColor(0.45f, 0.45f, 0.45f, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glScissor(bx, by, bw, bh);
+    glClearColor(0.05f, 0.05f, 0.05f, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    int fill = p->total ? (int)((double)done / p->total * bw) : 0;
+    if (fill > 0) {
+        glScissor(bx, by, fill, bh);
+        glClearColor(0.75f, 0.12f, 0.10f, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glDisable(GL_SCISSOR_TEST);
+    SDL_GL_SwapWindow(rt_window);
+    SDL_PumpEvents();  /* keeps iOS from taking the app for hung */
+}
+
+static int is_game_zip(const char *name) {
+    size_t n = strlen(name);
+    return !strncmp(name, IOS_ZIP_PREFIX, strlen(IOS_ZIP_PREFIX)) && n > 4 && !strcasecmp(name + n - 4, ".zip");
+}
+static int by_name(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+/* Main thread, with the GL context current: unpacks any game zips in the game folder (the current directory). */
+static void import_game_zips(void) {
+    DIR *d = opendir(".");
+    if (!d) return;
+    char *names[64];
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && n < 64)
+        if (is_game_zip(e->d_name)) names[n++] = strdup(e->d_name);
+    closedir(d);
+    if (!n) return;
+    qsort(names, n, sizeof *names, by_name);
+    ImportProgress p = {0, 0};
+    for (int i = 0; i < n; i++) p.total += unzip_total_size(names[i]);
+    rt_log("ios: unpacking %d game zip(s), %llu MB", n, (unsigned long long)(p.total >> 20));
+    uint64_t done = 0;
+    for (int i = 0; i < n; i++) {
+        char err[512] = "";
+        uint64_t size = unzip_total_size(names[i]);
+        if (unzip_to(names[i], ".", draw_progress, &p, done, err, sizeof err)) {
+            char msg[1024];
+            snprintf(msg, sizeof msg, "%s could not be unpacked: %s.\n\nThe files unpacked so far are kept; fix this and start "
+                     "the app again to carry on.", names[i], err);
+            rt_log("ios: %s", msg);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Game files", msg, rt_window);
+            exit(1);
+        }
+        done += size;
+        remove(names[i]);  /* unpacked: the space goes back to the phone */
+        rt_log("ios: unpacked %s", names[i]);
+        free(names[i]);
+    }
+    draw_progress(p.total, &p);
+}
+
 /* Main thread, before the game starts: window, GL context (left current on no thread), app events. */
 void ios_main_start(void) {
     rt_window_open();
     gl_context_open();
+    import_game_zips();
     SDL_GL_MakeCurrent(rt_window, NULL);  /* the game thread makes it current (gl_context_open) */
     touch_init();
     SDL_AddEventWatch(app_events, NULL);

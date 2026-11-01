@@ -30,8 +30,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libsdl2-dev libavformat-dev libavcodec-dev libswscale-dev \
-            libswresample-dev libavutil-dev libgles-dev libegl-dev libgl1-mesa-dri
+            libswresample-dev libavutil-dev libgles-dev libegl-dev libgl1-mesa-dri zlib1g-dev
       - name: Desktop GL and OpenGL ES render the same
         run: CC=clang tests/run-render-test.sh
       - name: Touch controls drive the virtual pad
         run: CC=clang tests/run-touch-test.sh
+      - name: The game-file importer unpacks zips
+        run: CC=clang tests/run-unzip-test.sh
