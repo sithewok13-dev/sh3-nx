@@ -52,15 +52,16 @@
 #define TRAY_R       20.0f
 #define TRAY_STEP    50.0f
 #define MENU_HOLD    450
+#define CHEAT_HOLD   500  /* the cheat's button, as the other ports': a hold, so a stray touch can't flip it */
 #define TAP_MS       300
 #define DRAG_LOOK    10.0f  /* a cluster button slid this far looks too */
 #define FPS_PERIOD   500
 
 /* the pad, numbered as SDL's buttons; the triggers are axes */
 enum { P_A, P_B, P_X, P_Y, P_BACK, P_START, P_RT, N_PAD };
-enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, N_BTN };
-static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA"};
-static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
+enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, N_BTN };
+static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA", ""};
+static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
 enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
 
 enum { GYRO_OFF, GYRO_TOUCH, GYRO_ALWAYS };
@@ -144,7 +145,8 @@ static Circle button_at(int b) {
     case B_MAP: return (Circle){ix + TOP_R, top, TOP_R};
     case B_ITEMS: return (Circle){ix + TOP_R + 2 * TOP_R + 14.0f, top, TOP_R};
     case B_MENU: return (Circle){W - ix - TOP_R, top, TOP_R};
-    case B_CAMERA: return (Circle){W - ix - TOP_R - 2 * TOP_R - 90.0f, top, TOP_R};
+    case B_CHEAT: return (Circle){W - ix - TOP_R - 2 * TOP_R - 90.0f, top, TOP_R};
+    case B_CAMERA: return (Circle){W - ix - TOP_R - 4 * TOP_R - 104.0f, top, TOP_R};
     }
     return (Circle){0, 0, 0};
 }
@@ -154,7 +156,7 @@ static Circle tray_at(int t) {
 }
 static int shown(int b) {
     if (b == B_CAMERA) return T.camera;
-    if (b == B_MAP || b == B_ITEMS || b == B_MENU || b == B_LIGHT) return 1;
+    if (b == B_MAP || b == B_ITEMS || b == B_MENU || b == B_LIGHT || b == B_CHEAT) return 1;
     return !atomic_load(&T.cursor);  /* the cluster: only in play */
 }
 
@@ -329,6 +331,12 @@ int touch_is_virtual_pad(int device_index) {
 }
 
 /* ---- the tray ---- */
+static void toggle_cheat(void) {
+    int on = !cheat_get();
+    cheat_set(on);
+    touch_sound_cheat(on);
+}
+
 static void use_tray(int t) {
     switch (t) {
     case T_SENS: T.sens = (T.sens + 1) % 4; break;
@@ -336,7 +344,7 @@ static void use_tray(int t) {
     case T_OPACITY: T.opacity = (T.opacity + 1) % 5; break;
     case T_FPS: T.show_fps = !T.show_fps; T.tray = 0; break;
     case T_CAMERA: T.camera = !T.camera; T.tray = 0; break;
-    case T_CHEAT: cheat_set(!cheat_get()); T.tray = 0; break;
+    case T_CHEAT: toggle_cheat(); T.tray = 0; break;
     case T_CONTROLS: T.classic = !T.classic; controls_set_classic(T.classic); break;
     }
     save_settings();
@@ -391,8 +399,8 @@ void touch_event(const SDL_Event *e) {
             float d = hypotf(x - T.f[slot].ox, y - T.f[slot].oy);
             if (d > T.f[slot].travel) T.f[slot].travel = d;
             T.f[slot].x = x, T.f[slot].y = y;
-            if (T.f[slot].kind == F_MENU) {
-                Circle c = button_at(B_MENU);
+            if (T.f[slot].kind == F_MENU || (T.f[slot].kind == F_BUTTON && T.f[slot].idx == B_CHEAT)) {
+                Circle c = button_at(T.f[slot].idx);
                 if (hypotf(x - c.x, y - c.y) > c.r + SLOP * 2) T.f[slot].off = 1;  /* slid off: neither tap nor tray */
             }
         } else if (slot >= 0 && e->type == SDL_FINGERUP) {
@@ -414,6 +422,11 @@ void touch_tick(void) {
     pthread_mutex_lock(&T.mx);
     Uint32 now = SDL_GetTicks();
     int changed = 0;
+    for (int i = 0; i < MAX_FINGERS; i++)
+        if (T.f[i].kind == F_BUTTON && T.f[i].idx == B_CHEAT && !T.f[i].off && now - T.f[i].t0 >= CHEAT_HOLD) {
+            toggle_cheat();
+            T.f[i].off = 1;  /* once a hold */
+        }
     for (int i = 0; i < MAX_FINGERS; i++)
         if (T.f[i].kind == F_MENU && !T.f[i].off && now - T.f[i].t0 >= MENU_HOLD) {
             T.tray = 1;
@@ -517,6 +530,32 @@ static void draw_flashlight(Circle c, int held, int on, float alpha) {
     #undef P
 }
 
+/* CHEAT: Pyramid Head's helmet, seen from the front, an edge toward us: the great iron pyramid, its two faces
+ * (the right one in shadow), the edge down the middle, the rim jutting out over the shoulders. While on, lit
+ * the red of rust and blood. */
+static void draw_pyramid(Circle c, int held, int on, float alpha) {
+    touchUiColor red = touchUi_Rgba(0.75f, 0.10f, 0.08f, 1.0f);
+    dl.alpha = alpha * (held ? 1.0f : IDLE_ALPHA);
+    touchUiDraw_Circle(&dl, c.x, c.y, c.r, on ? touchUi_Rgba(0.55f, 0.05f, 0.04f, 0.45f) : held ? touchUi_White(0.35f) : touchUi_Black(0.35f),
+                       2.0f, on ? red : touchUi_White(0.85f));
+    float x = c.x, y = c.y;
+    touchUiColor lit = on ? touchUi_Rgba(0.95f, 0.85f, 0.8f, 1.0f) : touchUi_White(0.92f);
+    touchUiColor dark = on ? touchUi_Rgba(0.62f, 0.14f, 0.11f, 1.0f) : touchUi_White(0.55f);
+    touchUiColor body = on ? touchUi_Rgba(0.35f, 0.05f, 0.04f, 1.0f) : touchUi_White(0.35f);
+    /* the shoulders it sits on */
+    float shoulders[] = {x - 9, y + 6, x + 9, y + 6, x + 16, y + 15, x - 16, y + 15};
+    touchUiDraw_Polygon(&dl, shoulders, 4, body);
+    /* the helmet: wide and squat, its front edge a little left of the middle; the lit face, the shadowed one */
+    float left[] = {x + 1, y - 14, x - 15, y + 6, x - 2, y + 10};
+    float right[] = {x + 1, y - 14, x - 2, y + 10, x + 15, y + 5};
+    touchUiDraw_Polygon(&dl, left, 3, lit);
+    touchUiDraw_Polygon(&dl, right, 3, dark);
+    touchUiDraw_Line(&dl, x + 1, y - 13, x - 2, y + 9.5f, 1.0f, touchUi_Black(0.55f));
+    /* the iron's seams across the faces */
+    touchUiDraw_Line(&dl, x - 7, y - 2, x - 1, y + 0.5f, 0.8f, touchUi_Black(0.35f));
+    touchUiDraw_Line(&dl, x - 0.5f, y + 0.5f, x + 8, y - 2.5f, 0.8f, touchUi_Black(0.35f));
+}
+
 static void build(Uint32 now) {
     touchUiDraw_Begin(&dl);
     float alpha = opacity_steps[T.opacity];
@@ -527,13 +566,14 @@ static void build(Uint32 now) {
         Circle c = button_at(b);
         float size = c.r >= 40 ? 15.0f : c.r >= 28 ? (strlen(btn_label[b]) > 4 ? 10.0f : 11.5f) : 8.5f;
         if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light), alpha);
+        else if (b == B_CHEAT) draw_pyramid(c, T.held[b], cheat_get(), alpha);
         else draw_button(c, btn_label[b], T.held[b], 0, alpha, size);
     }
-    /* MENU's hold ring */
+    /* MENU's and CHEAT's hold rings */
     for (int i = 0; i < MAX_FINGERS; i++)
-        if (T.f[i].kind == F_MENU && !T.f[i].off) {
-            Circle c = button_at(B_MENU);
-            float p = (float)(now - T.f[i].t0) / MENU_HOLD;
+        if ((T.f[i].kind == F_MENU || (T.f[i].kind == F_BUTTON && T.f[i].idx == B_CHEAT)) && !T.f[i].off) {
+            Circle c = button_at(T.f[i].kind == F_MENU ? B_MENU : B_CHEAT);
+            float p = (float)(now - T.f[i].t0) / (T.f[i].kind == F_MENU ? MENU_HOLD : CHEAT_HOLD);
             dl.alpha = 1;
             touchUiDraw_Arc(&dl, c.x, c.y, c.r + 4, 3.0f, 0, 6.2831853f * (p > 1 ? 1 : p), 1, blue);
         }

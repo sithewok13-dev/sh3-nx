@@ -28,7 +28,7 @@ int game_cursor_shown(void) { return cursor; }
 static int light;
 int game_flashlight_on(void) { return light; }
 
-enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA };
+enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT };
 enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS };
 
 static int W = 1280, H = 590, failures;
@@ -264,6 +264,53 @@ int main(int argc, char **argv) {
     FILE *cfg = fopen("touch.cfg", "r");
     check("the settings are kept", cfg != NULL);
     if (cfg) fclose(cfg);
+
+    /* the CHEAT button, top right: a 0.5 s hold flips it, once a hold; a tap does nothing */
+    press(18, B_CHEAT);
+    finger(SDL_FINGERUP, 18, 0, 0);
+    tick();
+    check("a tap on CHEAT does nothing", cheat == 1);
+    press(18, B_CHEAT);
+    SDL_Delay(520);
+    tick();
+    check("held 0.5 s, CHEAT turns the cheat off", cheat == 0);
+    SDL_Delay(520);
+    tick();
+    check("once a hold", cheat == 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    cheat = 1;
+    touch_draw();
+    float hx, hy;
+    at(B_CHEAT, &hx, &hy);
+    check("the helmet is drawn", pixel_differs(hx - 4, hy, bg));
+    shot(out, "cheat.ppm");
+    finger(SDL_FINGERUP, 18, 0, 0);
+    int n_on, n_off;
+    float *on_snd = touch_sound_make(1, &n_on), *off_snd = touch_sound_make(0, &n_off);
+    float peak = 0;
+    for (int i = 0; on_snd && i < n_on; i++) peak = fmaxf(peak, fabsf(on_snd[i]));
+    check("its sounds: a long one on, a short one off, not clipping", on_snd && off_snd && n_on > 48000 && n_off < 20000 &&
+                                                                       peak > 0.5f && peak <= 0.71f);
+    FILE *wav = NULL;
+    for (int k = 0; k < 2; k++) {  /* OUT/cheat-on.wav, cheat-off.wav, to listen to */
+        char path[512];
+        snprintf(path, sizeof path, "%s/cheat-%s.wav", out, k ? "off" : "on");
+        float *snd = k ? off_snd : on_snd;
+        int n = k ? n_off : n_on;
+        if (!snd || !(wav = fopen(path, "wb"))) continue;
+        uint32_t data = n * 2, v32;
+        uint16_t v16;
+        fwrite("RIFF", 1, 4, wav); v32 = 36 + data; fwrite(&v32, 4, 1, wav);
+        fwrite("WAVEfmt ", 1, 8, wav); v32 = 16; fwrite(&v32, 4, 1, wav);
+        v16 = 1; fwrite(&v16, 2, 1, wav); fwrite(&v16, 2, 1, wav);
+        v32 = 48000; fwrite(&v32, 4, 1, wav); v32 = 96000; fwrite(&v32, 4, 1, wav);
+        v16 = 2; fwrite(&v16, 2, 1, wav); v16 = 16; fwrite(&v16, 2, 1, wav);
+        fwrite("data", 1, 4, wav); fwrite(&data, 4, 1, wav);
+        for (int i = 0; i < n; i++) { int16_t q = (int16_t)(snd[i] * 32767); fwrite(&q, 2, 1, wav); }
+        fclose(wav);
+    }
+    free(on_snd);
+    free(off_snd);
 
     /* in the game's menus (its cursor shown) only the top row is a control; a touch elsewhere is a click */
     SDL_Delay(200);  /* the earlier taps' A, pressed and let go (the phone ticks all the time) */
