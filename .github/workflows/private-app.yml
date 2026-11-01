@@ -1,0 +1,131 @@
+# The iOS app for the owner's private build repo, compiled here because a public repo's runners are free.
+#
+# Started by hand (Actions > Private app build > Run workflow) or by the private repo's Build workflow; never on a
+# pull request. It fetches the owner's sh3.exe (only the start of the first game-file zip in the private repo's
+# "game-files" release, with the BUILD_TOKEN secret), turns it into C as tools/regen.sh does, compiles the app and
+# uploads SH3.ipa straight back to the private repo's "app" release. Nothing of the game is kept here, and nothing
+# of it reaches this public log:
+#   - no cache holds anything of the game (only Python packages and SDL2, which are public);
+#   - the generator's and the compiler's output go to files; on failure only the error lines from the port's own
+#     sources are shown, and the whole log goes to the private repo (release "build-logs");
+#   - the exe, the generated code and the app are deleted at the end, whatever happened.
+# How it is set up, and how to do the same for another game: the owner's jk-files repo, docs/FREE_MAC_BUILDS.md.
+name: Private app build
+on:
+  workflow_dispatch:
+    inputs:
+      private_repo:
+        description: "The private repo with the game files, which receives the app"
+        default: sithewok13-dev/sh3-ios-build
+      port_ref:
+        description: "Branch or commit of this repo to build"
+        default: ios
+      bundle_id:
+        description: "The app's bundle identifier"
+        default: com.sithewok.sh3
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-app
+  cancel-in-progress: false
+
+jobs:
+  app:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.port_ref }}
+          path: port
+
+      - name: sh3.exe from the private repo (the first file in SH3-game-1.zip; only the zip's start is fetched)
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_TOKEN }}
+          REPO: ${{ inputs.private_repo }}
+        run: |
+          url=$(gh api "repos/$REPO/releases/tags/game-files" --jq '.assets[] | select(.name=="SH3-game-1.zip") | .url')
+          curl -fsSL -r 0-15999999 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$url" -o zip-start.bin
+          mkdir -p game
+          python3 - <<'PY'
+          import struct, zlib
+          b, at = open('zip-start.bin', 'rb').read(), 0
+          while True:
+              sig, _, flags, method, _, _, crc, csize, usize, fnlen, exlen = struct.unpack_from('<IHHHHHIIIHH', b, at)
+              assert sig == 0x04034B50, 'not a zip'
+              name, start = b[at + 30:at + 30 + fnlen].decode(), at + 30 + fnlen + exlen
+              if name == 'sh3.exe': break
+              at = start + csize
+          raw = b[start:start + csize]
+          exe = zlib.decompressobj(-15).decompress(raw) if method == 8 else raw
+          assert len(exe) == usize and zlib.crc32(exe) == crc, 'damaged'
+          open('game/sh3.exe', 'wb').write(exe)
+          PY
+          rm zip-start.bin
+          [ "$(shasum game/sh3.exe | cut -d' ' -f1)" = aa2aca6dba19bf510c9c2e92eefdc15e98266581 ] || { echo "::error::not the exe the port is made for"; exit 1; }
+
+      - uses: actions/cache@v4  # Python packages only
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-${{ hashFiles('port/requirements.txt') }}
+
+      - name: The game's code, generated from sh3.exe
+        run: |
+          brew install ninja >/dev/null
+          cd port
+          python3 -m venv .venv > /dev/null
+          .venv/bin/pip install -q -r requirements.txt > /dev/null
+          ln -s ../game game
+          tools/regen.sh > ../regen.log 2>&1 || { echo "::error::the generator failed"; grep -iE "error|Traceback" ../regen.log | grep -v "recomp/gen" | head -20; exit 1; }
+          rm ../game/sh3.exe
+          echo "generated $(ls src/recomp/gen | wc -l | tr -d ' ') files"
+
+      - uses: actions/cache@v4  # SDL2 only: nothing of the game
+        with:
+          path: port/build/ios-deps
+          key: ios-deps-${{ hashFiles('port/tools/ios/build-deps.sh') }}
+
+      - name: SDL2 for iOS
+        run: port/tools/ios/build-deps.sh > deps.log 2>&1 || { tail -40 deps.log; exit 1; }
+
+      - name: The app
+        env:
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+        run: |
+          cmake -S port -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-w \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DSH2_IOS_BUNDLE_ID="$BUNDLE_ID" -DSH2_IOS_BUILD="$GITHUB_RUN_NUMBER" \
+            -DSH2_IOS_DEPS="$PWD/port/build/ios-deps" > build.log 2>&1 &&
+          cmake --build build >> build.log 2>&1 || {
+            echo "::error::the build failed; errors in the port's own sources (the whole log is in the private repo's build-logs release):"
+            grep -E "error" build.log | grep -v "recomp/gen" | head -30
+            exit 1
+          }
+          mkdir Payload && cp -R build/SH3.app Payload/ && zip -qr SH3.ipa Payload
+          echo "SH3.ipa: $(du -h SH3.ipa | cut -f1), build $GITHUB_RUN_NUMBER"
+
+      - name: SH3.ipa to the private repo's "app" release
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_TOKEN }}
+          REPO: ${{ inputs.private_repo }}
+        run: |
+          gh release view app -R "$REPO" >/dev/null 2>&1 || \
+            gh release create app -R "$REPO" --title "App" --notes "Unsigned SH3.ipa: open it in Feather to sign and install it."
+          gh release upload app SH3.ipa --clobber -R "$REPO"
+
+      - name: The logs to the private repo, if something failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_TOKEN }}
+          REPO: ${{ inputs.private_repo }}
+        run: |
+          ls regen.log build.log 2>/dev/null || exit 0
+          gh release view build-logs -R "$REPO" >/dev/null 2>&1 || \
+            gh release create build-logs -R "$REPO" --title "Build logs" --notes "The public Mac build's full logs."
+          for f in regen.log build.log; do [ -f "$f" ] && gh release upload build-logs "$f" --clobber -R "$REPO"; done; true
+
+      - name: Nothing of the game left behind
+        if: always()
+        run: rm -rf game zip-start.bin port/src/recomp/gen port/build/sh3* port/build/disasm port/build/recomp port/build/func_id port/build/abi port/build/*.json port/build/*.log build Payload SH3.ipa build.log regen.log
