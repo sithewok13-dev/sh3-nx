@@ -24,6 +24,8 @@ static int cheat, classic = -1, cursor;
 void cheat_set(int on) { cheat = on; }
 int cheat_get(void) { return cheat; }
 void controls_set_classic(int on) { classic = on; }
+static int rate;
+int game_set_frame_rate(int fps) { if (fps) rate = fps; return 1; }
 int game_screen(void) { return cursor; }  /* SCREEN_*: 0 play */
 static int pause_taps;
 static float pause_y;
@@ -34,7 +36,7 @@ static int world = 1;
 int game_in_world(void) { return world; }
 
 enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK };
-enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS };
+enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS };
 
 static int W = 1280, H = 590, failures;
 static SDL_GameController *c;
@@ -93,6 +95,7 @@ int main(int argc, char **argv) {
     touch_init();
     touch_draw();  /* (the overlay learns the game's state as it draws, each frame on the phone) */
     check("modern controls by default", classic == 0);
+    check("60 frames a second by default", rate == 60);
     check("the virtual pad is a game controller", SDL_NumJoysticks() == 1 && SDL_IsGameController(0) && touch_is_virtual_pad(0));
     c = SDL_GameControllerOpen(0);
     SDL_JoystickUpdate();
@@ -271,6 +274,14 @@ int main(int argc, char **argv) {
     finger(SDL_FINGERDOWN, 16, kx, ky);
     finger(SDL_FINGERUP, 16, kx, ky);
     check("CONTROLS switches to classic and keeps the tray open", classic == 1);
+    float rx2, ry2;
+    touch_control_center(-1 - T_RATE, &rx2, &ry2);
+    finger(SDL_FINGERDOWN, 16, rx2, ry2);
+    finger(SDL_FINGERUP, 16, rx2, ry2);
+    check("RATE switches to 30", rate == 30);
+    finger(SDL_FINGERDOWN, 16, rx2, ry2);
+    finger(SDL_FINGERUP, 16, rx2, ry2);
+    check("and back to 60", rate == 60);
     finger(SDL_FINGERDOWN, 16, kx, ky);
     finger(SDL_FINGERUP, 16, kx, ky);
     check("and back to modern", classic == 0);

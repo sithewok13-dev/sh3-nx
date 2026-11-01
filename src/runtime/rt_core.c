@@ -495,6 +495,16 @@ static void read_ini(void) {
     ios_screen_size(&sw, &sh);
     if (screen && sw > 0 && sh > 0) {
         rt_res_w = sw < 1920 ? (uint32_t)sw : 1920;
+        /* RES in the touch tray (touch.cfg quality=0/1/2): full, high (80%, the default), balanced (two
+         * thirds), for a cooler phone; Present still fills the screen */
+        static const float res_scale[3] = {1.0f, 0.8f, 2.0f / 3.0f};
+        int res = 1;
+        char cl[128];
+        FILE *cfg = fopen("touch.cfg", "r");
+        while (cfg && fgets(cl, sizeof cl, cfg)) sscanf(cl, "quality=%d", &res);
+        if (cfg) fclose(cfg);
+        if (res < 0 || res > 2) res = 1;
+        rt_res_w = ((uint32_t)(rt_res_w * res_scale[res]) + 1) & ~1u;
         rt_res_h = ((uint32_t)((uint64_t)rt_res_w * sh / sw) + 1) & ~1u;
         if (rt_res_h < 240) rt_res_h = 240;
         rt_log("resolution follows the %dx%d screen: %ux%u", sw, sh, rt_res_w, rt_res_h);

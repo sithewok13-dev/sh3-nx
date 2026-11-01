@@ -54,3 +54,7 @@ int game_frame_size(int *w, int *h) {
 
 /* Heather is somewhere in the game (not the title or its menus): the top row's game buttons show. */
 int game_in_world(void) { return rt_game_loaded && MEM32(PLAYER_PTR) != 0; }
+
+/* RATE in the touch tray: SH3's frame limiter isn't known yet (nor the fixes 60 frames a second would need, as
+ * SH2's did), so the game keeps its own 30 and RATE shows dimmed. */
+int game_set_frame_rate(int fps) { (void)fps; return -1; }

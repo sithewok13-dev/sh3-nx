@@ -68,7 +68,7 @@ enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHE
 static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA", "",
                                              "", "", "", "", "OK", "BACK"};
 static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
-enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
+enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
 
 enum { GYRO_OFF, GYRO_TOUCH, GYRO_ALWAYS };
 static const float sens_steps[] = {1.0f, 1.5f, 2.0f, 3.0f};
@@ -103,6 +103,7 @@ static struct {
     Uint32 tap_at;
     /* settings, kept in touch.cfg */
     int gyro, sens, opacity, show_fps, camera, classic;
+    int rate30, res, res_started;  /* RATE: 30 instead of 60; RES 0-2 (as the game started: it applies at launch) */
     int shot;                       /* CAMERA was tapped: touch_draw saves the frame */
     SDL_Sensor *gyro_sensor;
     float gyro_x, gyro_y;           /* the latest tilt, as right-stick tilt */
@@ -119,8 +120,8 @@ static struct {
 static void save_settings(void) {
     FILE *f = fopen("touch.cfg", "w");
     if (!f) return;
-    fprintf(f, "gyro=%d\nsens=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\n", T.gyro, T.sens, T.opacity, T.show_fps,
-            T.camera, T.classic);
+    fprintf(f, "gyro=%d\nsens=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\nrate30=%d\nres=%d\n", T.gyro, T.sens, T.opacity,
+            T.show_fps, T.camera, T.classic, T.rate30, T.res);
     fclose(f);
 }
 static void load_settings(void) {
@@ -134,6 +135,8 @@ static void load_settings(void) {
         else if (sscanf(line, "fps=%d", &v) == 1) T.show_fps = !!v;
         else if (sscanf(line, "camera=%d", &v) == 1) T.camera = !!v;
         else if (sscanf(line, "classic=%d", &v) == 1) T.classic = !!v;
+        else if (sscanf(line, "rate30=%d", &v) == 1) T.rate30 = !!v;
+        else if (sscanf(line, "res=%d", &v) == 1 && v >= 0 && v <= 2) T.res = v;
     }
     if (f) fclose(f);
 }
@@ -344,6 +347,8 @@ void touch_init(void) {
     pthread_mutexattr_destroy(&attr);
     load_settings();
     controls_set_classic(T.classic);
+    game_set_frame_rate(T.rate30 ? 30 : 60);
+    T.res_started = T.res;
     SDL_VirtualJoystickDesc d;
     SDL_zero(d);
     d.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;
@@ -394,6 +399,8 @@ static void use_tray(int t) {
     case T_CAMERA: T.camera = !T.camera; T.tray = 0; break;
     case T_CHEAT: toggle_cheat(); T.tray = 0; break;
     case T_CONTROLS: T.classic = !T.classic; controls_set_classic(T.classic); break;
+    case T_RATE: if (game_set_frame_rate(T.rate30 ? 60 : 30) > 0) T.rate30 = !T.rate30; break;  /* (SH3: 30 only, so far) */
+    case T_RES: T.res = (T.res + 1) % 3; break;  /* the game's size is set as it starts: from the next launch */
     }
     save_settings();
 }
@@ -719,11 +726,23 @@ static void build(Uint32 now) {
             case T_CAMERA: snprintf(label, sizeof label, "CAM"); lit = T.camera; break;
             case T_CHEAT: snprintf(label, sizeof label, "CHEAT"); lit = cheat_get(); break;
             case T_CONTROLS: snprintf(label, sizeof label, "CTRL\n%s", T.classic ? "CLASSIC" : "MODERN"); break;
+            case T_RATE: {
+                int can = game_set_frame_rate(0) >= 0;
+                snprintf(label, sizeof label, "RATE\n%d", T.rate30 || !can ? 30 : 60); lit = !T.rate30 && can; dim = !can;
+                break;
+            }
+            case T_RES: {
+                static const char *const names[] = {"FULL", "HIGH", "BAL"};
+                snprintf(label, sizeof label, "RES\n%s%s", names[T.res], T.res != T.res_started ? "*" : "");
+                break;
+            }
             }
             draw_button(tray_at(t), label, 0, lit, dim ? 0.5f : 1.0f, 6.5f);
         }
         dl.alpha = 1;
-        touchUiDraw_Text(&dl, "v" SH2_VERSION_LABEL, (first.x + last.x) / 2, first.y + TRAY_R + 18, 8.0f, 1.0f, touchUi_White(0.45f));
+        touchUiDraw_Text(&dl, T.res != T.res_started ? "v" SH2_VERSION_LABEL "  -  port by cutarev  -  RES: restart the app to apply"
+                                                     : "v" SH2_VERSION_LABEL "  -  port by cutarev",
+                         (first.x + last.x) / 2, first.y + TRAY_R + 18, 8.0f, 1.0f, touchUi_White(0.45f));
     }
 }
 
