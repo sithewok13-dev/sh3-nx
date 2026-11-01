@@ -27,6 +27,10 @@ static const struct { uint8_t id, ammo, magazine; } guns[] = {
     {8, 9, 4},   /* hunting rifle, rifle rounds */
 };
 static const uint8_t healing[] = {1, 2, 3};  /* health drink, first aid kit, ampoule */
+/* The other weapons: the item menu's weapon slots (sub_00472500's switch on the weapon in hand) are ids 4, 6,
+ * 8, 10 and 12-17. 12 is the one the reload fills to 8 by itself (sub_0049EB30); 10 (with its ammo, 11) is only
+ * handed out at the start of the other scenario (sub_0049EE10), so it is left out. */
+static const uint8_t melee[] = {12, 13, 14, 15, 16, 17};
 
 static int cheat_on;
 
@@ -60,4 +64,5 @@ void cheat_tick(void) {
         give(guns[i].ammo, COUNT_MAX);
     }
     for (unsigned i = 0; i < sizeof healing; i++) give(healing[i], 10);
+    for (unsigned i = 0; i < sizeof melee; i++) give(melee[i], melee[i] == 12 ? 8 : 0);
 }
