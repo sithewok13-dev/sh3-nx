@@ -111,7 +111,7 @@ static struct {
     int runs;                       /* the stick is pushed onto the run marker */
     int run_marker;                 /* placed (there was room above the stick) */
     float run_x, run_y, run_deg;    /* where, and its direction from the stick (degrees, counter-clockwise) */
-    atomic_int light;               /* the flashlight is on (touch_draw reads the game) */
+    atomic_int light;               /* the flashlight: 0 not had yet, 1 off, 2 on (touch_draw reads the game) */
 } T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1};
 
 /* ---- settings ---- */
@@ -175,7 +175,8 @@ static int shown(int b) {
     if (b == B_MENU) return 1;
     if (s == SCREEN_MENU) return 0;  /* the main menu, options, saves: nothing of play */
     if (b == B_CAMERA) return T.camera;
-    if (b == B_MAP || b == B_ITEMS || b == B_LIGHT || b == B_CHEAT) return 1;
+    if (b == B_LIGHT) return atomic_load(&T.light) != 0;  /* 0: James has no flashlight yet */
+    if (b == B_MAP || b == B_ITEMS || b == B_CHEAT) return 1;
     return s == SCREEN_PLAY;  /* the cluster */
 }
 
@@ -569,24 +570,33 @@ static void draw_button(Circle c, const char *label, int held, int lit, float al
 }
 
 /* LIGHT: a flashlight, its lens to the upper right; on, its beam is out and it is lit blue. */
+/* LIGHT: a flashlight lying level, lens to the right, no ring. On: warm, the lens lit and a soft cone of light
+ * out of it. Off: grey, the lens dark. (Hidden until James has one: shown().) */
 static void draw_flashlight(Circle c, int held, int on, float alpha) {
-    /* no ring: the flashlight alone, larger; on, bright with its beam out, off, dim */
-    dl.alpha = alpha * (held || on ? 1.0f : IDLE_ALPHA);
-    touchUiColor ink = on ? touchUi_Rgba(1.0f, 0.97f, 0.85f, 1.0f) : touchUi_White(0.55f);
-    touchUiColor beam = touchUi_Rgba(1.0f, 0.93f, 0.6f, 0.95f);
-    /* drawn pointing right, then turned 35 degrees up: the handle, the wider head, the lens */
-    float ca = cosf(-0.61f), sa = sinf(-0.61f), k = 1.45f, ox = c.x - 4.0f, oy = c.y + 3.0f;
-    #define P(px, py) ox + k * ((px) * ca - (py) * sa), oy + k * ((px) * sa + (py) * ca)
-    float body[] = {P(-11, -2.6f), P(1, -2.6f), P(1, 2.6f), P(-11, 2.6f)};
-    float head[] = {P(1, -2.6f), P(6, -5.5f), P(6, 5.5f), P(1, 2.6f)};
-    touchUiDraw_Polygon(&dl, body, 4, ink);
-    touchUiDraw_Polygon(&dl, head, 4, ink);
-    touchUiDraw_Line(&dl, P(7.2f, -5.5f), P(7.2f, 5.5f), 2.0f, on ? beam : touchUi_White(0.4f));
-    if (on)  /* the beam */
-        for (int i = -1; i <= 1; i++) touchUiDraw_Line(&dl, P(10, i * 4.0f), P(16, i * 7.5f), 2.0f, beam);
-    else     /* the switch */
-        touchUiDraw_Circle(&dl, P(-5, 0), 1.6f, touchUi_Black(0.8f), 0, touchUi_Clear());
-    #undef P
+    const float k = 1.55f;                                   /* drawn in a 40 x 20 box, then scaled */
+    float x = c.x + 2.0f * k, y = c.y;  /* the lamp centred on the button, the beam out to its right */
+    #define X(v) (x + (v) * k)
+    #define Y(v) (y + (v) * k)
+    touchUiColor body = on ? touchUi_Rgba(0.93f, 0.91f, 0.86f, 1.0f) : touchUi_White(0.62f);
+    touchUiColor grip = on ? touchUi_Rgba(0.5f, 0.48f, 0.45f, 1.0f) : touchUi_White(0.32f);
+    if (on)  /* the light: a cone out of the lens, brighter toward its middle, fading as it spreads */
+        for (int i = 0; i < 4; i++) {
+            float len = 26 - 4.5f * i, half = 12 - 2.6f * i;
+            float cone[] = {X(9.5f), Y(-4.5f + 0.8f * i), X(9.5f + len), Y(-half), X(9.5f + len), Y(half), X(9.5f), Y(4.5f - 0.8f * i)};
+            dl.alpha = alpha * 0.16f;
+            touchUiDraw_Polygon(&dl, cone, 4, touchUi_Rgba(1.0f, 0.93f, 0.6f, 1.0f));
+        }
+    dl.alpha = alpha * (held || on ? 1.0f : 0.85f);
+    touchUiDraw_RRect(&dl, X(-15), Y(-3.5f), 17 * k, 7 * k, 2.5f * k, body, 0, touchUi_Clear());  /* the handle */
+    for (int i = 0; i < 3; i++) touchUiDraw_Line(&dl, X(-12 + 4.0f * i), Y(-2.3f), X(-12 + 4.0f * i), Y(2.3f), 1.3f, grip);
+    float head[] = {X(1), Y(-3.5f), X(8), Y(-6.5f), X(8), Y(6.5f), X(1), Y(3.5f)};
+    touchUiDraw_Polygon(&dl, head, 4, body);
+    touchUiDraw_RRect(&dl, X(7.5f), Y(-6.5f), 2.5f * k, 13 * k, 1, on ? touchUi_Rgba(1.0f, 0.97f, 0.78f, 1.0f) : touchUi_Black(0.7f),
+                      0, touchUi_Clear());  /* the lens */
+    touchUiDraw_RRect(&dl, X(-6), Y(-5.3f), 3 * k, 2.2f * k, 0.8f, on ? touchUi_Rgba(0.92f, 0.28f, 0.2f, 1.0f) : grip, 0,
+                      touchUi_Clear());  /* the switch, red while on */
+    #undef X
+    #undef Y
 }
 
 /* The menus' arrows: a button with a triangle pointing its way. */
@@ -627,7 +637,7 @@ static void build(Uint32 now) {
         if (!shown(b)) continue;
         Circle c = button_at(b);
         float size = c.r >= 40 ? 15.0f : c.r >= 28 ? (strlen(btn_label[b]) > 4 ? 10.0f : 11.5f) : 8.5f;
-        if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light), alpha);
+        if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light) == 2, alpha);
         else if (b == B_CHEAT) draw_halo(c, T.held[b], cheat_get(), alpha);
         else if (b >= B_UP && b <= B_RIGHT) draw_arrow(c, b - B_UP, T.held[b], alpha);
         else draw_button(c, btn_label[b], T.held[b], 0, alpha, size);
@@ -672,6 +682,15 @@ static void build(Uint32 now) {
                 touchUiDraw_Line(&dl, T.run_x, T.run_y + tip, T.run_x + 6, T.run_y + tip + 5, 2.0f, cc);
             }
         }
+    }
+    /* the look stick, while a thumb drags to look: where it landed, the knob following it */
+    for (int i = 0; i < MAX_FINGERS && !cursor; i++) {
+        if (T.f[i].kind != F_LOOK) continue;
+        float ox = T.f[i].ox, oy = T.f[i].oy, dx = T.f[i].x - ox, dy = T.f[i].y - oy, len = hypotf(dx, dy);
+        if (len > LOOK_R) dx *= LOOK_R / len, dy *= LOOK_R / len;
+        dl.alpha = alpha;
+        touchUiDraw_Circle(&dl, ox, oy, LOOK_R, touchUi_White(0.08f), 1.5f, touchUi_White(0.45f));
+        touchUiDraw_Circle(&dl, ox + dx, oy + dy, KNOB_R, touchUi_White(0.30f), 1.5f, touchUi_White(0.45f));
     }
     if (T.show_fps) {
         Circle m = button_at(B_MENU);

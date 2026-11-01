@@ -489,7 +489,11 @@ void launcher_run(void) {
     glClearColor(0, 0, 0, 1);
     logo_px = decode(logo_bmp, logo_bmp_end, &logo_w, &logo_h);
     sound_init();
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    splash(splash_bmp, splash_bmp_end, 1000, SPLASH_SHA1);  /* the author's warning, still shown: a tap goes on sooner */
+#else
     splash(splash_bmp, splash_bmp_end, 4000, SPLASH_SHA1);
+#endif
     ini_load();
     draw_menu(0);
     fade(1);

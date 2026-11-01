@@ -30,8 +30,9 @@ void controls_tick(void) {
     if (MEM8(CONTROL_TYPE) != want) MEM8(CONTROL_TYPE) = want;
 }
 
-/* The flashlight's state is not known yet in SH3: LIGHT is drawn unlit (its button still toggles the light). */
-int game_flashlight_on(void) { return 0; }
+/* The flashlight for LIGHT's picture: 0 none yet (hidden), 1 off, 2 on. SH3's switch and whether Heather has
+ * the light aren't found yet, so it shows, drawn off (its button still toggles the light). */
+int game_flashlight_on(void) { return rt_game_loaded && MEM32(PLAYER_PTR) ? 1 : 0; }
 
 /* Before the game is loaded (the launcher draws the overlay too) none of its memory is there to read. */
 int game_screen(void) {

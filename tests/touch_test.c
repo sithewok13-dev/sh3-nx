@@ -28,7 +28,7 @@ int game_screen(void) { return cursor; }  /* SCREEN_*: 0 play */
 static int pause_taps;
 static float pause_y;
 int game_pause_tap(float y480) { pause_y = y480; pause_taps++; return y480 >= 216 && y480 < 366; }
-static int light;
+static int light = 1;  /* the flashlight: had, off */
 int game_flashlight_on(void) { return light; }
 
 enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK };
@@ -107,9 +107,17 @@ int main(int argc, char **argv) {
     press(1, B_AIM);
     check("AIM pulls RT alone", axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 30000 && !btn(SDL_CONTROLLER_BUTTON_A));
     finger(SDL_FINGERUP, 1, 0, 0);
+    touch_draw();  /* (the overlay learns the flashlight's state as it draws) */
     press(1, B_LIGHT);
     check("LIGHT (top left) is B", btn(SDL_CONTROLLER_BUTTON_B));
     finger(SDL_FINGERUP, 1, 0, 0);
+    light = 0;
+    touch_draw();
+    press(1, B_LIGHT);
+    check("before James has a flashlight, no LIGHT", !btn(SDL_CONTROLLER_BUTTON_B));
+    finger(SDL_FINGERUP, 1, 0, 0);
+    light = 1;
+    touch_draw();
     press(1, B_MAP);
     check("MAP is Y", btn(SDL_CONTROLLER_BUTTON_Y));
     finger(SDL_FINGERUP, 1, 0, 0);
@@ -144,6 +152,11 @@ int main(int argc, char **argv) {
     /* look: a drag on the right, with the stick still held (two thumbs) */
     finger(SDL_FINGERDOWN, 6, W * 0.6f, H * 0.45f);
     finger(SDL_FINGERMOTION, 6, W * 0.6f, H * 0.45f - 100);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    touch_draw();
+    check("the look stick shows where the thumb landed", pixel_differs(W * 0.6f + 59, H * 0.45f, (const uint8_t[3]){0, 0, 0}));
+    glClearColor(0.25f, 0.27f, 0.3f, 1);
     check("a drag up on the right looks up while the stick is held", axis(SDL_CONTROLLER_AXIS_RIGHTY) < -32000 &&
                                                                           axis(SDL_CONTROLLER_AXIS_LEFTX) > 32000);
     finger(SDL_FINGERUP, 6, 0, 0);
@@ -156,7 +169,7 @@ int main(int argc, char **argv) {
     finger(SDL_FINGERMOTION, 7, fx, fy);
 
     /* the picture: the stick pushed onto the run marker, FIRE held, the flashlight on */
-    light = 1;
+    light = 2;
     finger(SDL_FINGERMOTION, 5, sx, sy - 80);
     glClearColor(0.25f, 0.27f, 0.3f, 1);
     glClear(GL_COLOR_BUFFER_BIT);
