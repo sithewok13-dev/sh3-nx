@@ -25,6 +25,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   # The bundle is unsigned: SideStore, AltStore or Sideloadly sign it on install.
   set(SH2_IOS_DEPS "${CMAKE_SOURCE_DIR}/build/ios-deps" CACHE PATH "SDL2 built for iOS (tools/ios/build-deps.sh)")
   target_compile_definitions(sh3 PRIVATE SH2_IOS SH2_GLES)
+  enable_language(OBJC)
+  target_sources(sh3 PRIVATE src/runtime/ios_photos.m)
   target_include_directories(sh3 PRIVATE ${SH2_IOS_DEPS}/include)
   target_link_libraries(sh3 PRIVATE ${SH2_IOS_DEPS}/lib/libSDL2main.a ${SH2_IOS_DEPS}/lib/libSDL2.a iconv m z
     "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreBluetooth"

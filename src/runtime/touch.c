@@ -1,109 +1,252 @@
-/* On-screen touch controls (iOS, or SH2_TOUCH to test them elsewhere).
+/* On-screen touch controls (iOS, or SH2_TOUCH with SH2_GLES to test them on Linux): the touch controls
+ * standard of the other ports (jk-files docs/HOUSE_STYLE.md section 3), drawn with the Jedi Knight port's
+ * renderer (touchUiDraw.c, touchUiRender_gl.c).
  *
- * The controls are a virtual SDL gamepad: the game (src/win32/dinput.c) and the launcher read it like any
- * other controller, and a real one, once connected, takes over (dinput prefers it) while the overlay hides.
- * Touches arrive on the main thread (ios.c's event watch) and set the virtual pad's buttons and axes; the
- * game thread draws the overlay over each presented frame (touch_draw), in the window's pixels.
+ * The controls are a virtual SDL gamepad, pressing the game's default pad bindings (dinput.c's pad_defaults);
+ * a real controller, once connected, takes over and the overlay hides. Touches arrive on the main thread
+ * (ios.c's event watch), the overlay is drawn on the game thread over each presented frame (touch_draw).
+ * Sizes are in points (the window's units on iOS), times in milliseconds.
  *
- * Layout, landscape, sized from the screen's height H and kept clear of the rounded corners:
- *   left half   a floating stick that starts where the thumb lands (movement)
- *   right side  A B X Y in a diamond; dragging anywhere else on the right half is the right stick (camera)
- *   top corners L1 / L2 and R1 / R2
- *   top middle  Back and Start */
+ *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone), with the run marker 100 pt
+ *                above it: pushed onto it, James runs straight ahead
+ *   elsewhere    a drag looks (the right stick: the search view); a quick tap is a mouse click where the game
+ *                shows its cursor (dinput.c), else ACTION
+ *   bottom right FIRE (aim and attack), the arc AIM / ACTION / RUN round it, LIGHT beside them; a drag on any of
+ *                them looks too
+ *   top left     MAP, ITEMS            top right  MENU, the FPS readout left of it, CAMERA (when on) further left
+ *   MENU         a tap pauses (or skips: the pad's Back); held 0.45 s, the tray opens under it:
+ *                SENS, GYRO, OPACITY, FPS, CAMERA, CHEAT, CONTROLS, and the app's version below
+ * While the game shows its mouse cursor (its menus), only the top row shows and a touch is a click. */
 #if defined(SH2_IOS) || defined(SH2_TOUCH)
 #include "rt.h"
 #include "../d3d8/gl.h"
+#include "touchUiDraw.h"
+#include "touchUiRender_gl.h"
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
-enum { C_A, C_B, C_X, C_Y, C_BACK, C_START, C_L1, C_R1, C_L2, C_R2, N_BUTTONS };
-/* the SDL button (or, for the triggers, axis) each control drives */
-static const int ctl_button[N_BUTTONS] = {
-    SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_B, SDL_CONTROLLER_BUTTON_X, SDL_CONTROLLER_BUTTON_Y,
-    SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
-    SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SDL_CONTROLLER_AXIS_TRIGGERLEFT, SDL_CONTROLLER_AXIS_TRIGGERRIGHT};
-static const float ctl_color[N_BUTTONS][3] = {  /* Xbox's colors for the face buttons, grey for the rest */
-    {0.35f, 0.80f, 0.30f}, {0.90f, 0.25f, 0.25f}, {0.25f, 0.50f, 0.95f}, {0.95f, 0.80f, 0.20f},
-    {0.8f, 0.8f, 0.8f}, {0.8f, 0.8f, 0.8f}, {0.8f, 0.8f, 0.8f}, {0.8f, 0.8f, 0.8f}, {0.8f, 0.8f, 0.8f}, {0.8f, 0.8f, 0.8f}};
+#ifndef SH2_VERSION_LABEL
+#define SH2_VERSION_LABEL "dev"
+#endif
 
-typedef struct { float x, y, r; int rect; } Shape;  /* center and radius (half-height for the shoulder bars) in pixels */
+/* ---- the standard's numbers ---- */
+#define IDLE_ALPHA   0.65f  /* an untouched button; a touched one is at 1 */
+#define SLOP         6.0f   /* a touch this near a button counts */
+#define STICK_R      60.0f
+#define KNOB_R       24.0f
+#define STICK_DEAD   0.30f
+#define STICK_SIDE   0.42f  /* of the width */
+#define RUN_ABOVE    100.0f
+#define RUN_R        24.0f
+#define LOOK_R       60.0f  /* a look drag this long is the right stick's full tilt */
+#define FIRE_R       42.0f
+#define ARC_DIST     115.0f
+#define TOP_R        22.0f
+#define TRAY_R       20.0f
+#define TRAY_STEP    50.0f
+#define MENU_HOLD    450
+#define TAP_MS       300
+#define DRAG_LOOK    10.0f  /* a cluster button slid this far looks too */
+#define FPS_PERIOD   500
+
+/* the pad, numbered as SDL's buttons; the triggers are axes */
+enum { P_A, P_B, P_X, P_Y, P_BACK, P_START, P_RT, N_PAD };
+enum { B_FIRE, B_AIM, B_ACTION, B_RUN, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, N_BTN };
+static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "RUN", "LIGHT", "MAP", "ITEMS", "MENU", "CAMERA"};
+static const int btn_cluster[N_BTN] = {1, 1, 1, 1, 1, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
+enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
+
+enum { GYRO_OFF, GYRO_TOUCH, GYRO_ALWAYS };
+static const float sens_steps[] = {1.0f, 1.5f, 2.0f, 3.0f};
+static const float opacity_steps[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f};
 
 #define MAX_FINGERS 10
-enum { F_NONE, F_BUTTON, F_LSTICK, F_RSTICK };
+enum { F_NONE, F_BUTTON, F_STICK, F_LOOK, F_MENU, F_TRAY, F_TAP };
+
+typedef struct { float x, y, r; } Circle;
+
 static struct {
     pthread_mutex_t mx;
     SDL_Joystick *joy;              /* the virtual pad, opened so its state can be set */
     SDL_JoystickID joy_id;
-    int w, h;                       /* the window in pixels */
+    float w, h, k;                  /* the window in points, and pixels per point */
+    int pw, ph;                     /* in pixels */
     int visible;                    /* no real controller attached */
-    struct { SDL_FingerID id; int kind, button; float ox, oy, x, y; Uint32 t0; float travel; } f[MAX_FINGERS];
-    int held[N_BUTTONS];
-    int tap_a;                      /* a quick tap off the controls presses A (touch_set_tap_confirm) */
-    Uint32 tap_release;             /* when the A a tap pressed lets go (0: none held) */
+    atomic_int cursor;              /* the game shows its mouse cursor (its menus): set by touch_draw */
+    struct {
+        SDL_FingerID id;
+        int kind, idx;              /* idx: the button or tray button */
+        float ox, oy, x, y, travel;
+        Uint32 t0;                  /* SDL_GetTicks when it went down */
+        int off;                    /* slid off a hold button: it does nothing any more */
+    } f[MAX_FINGERS];
+    int held[N_BTN];
+    int tray;                       /* the tray is open */
+    int tap_a;                      /* a quick tap off the controls confirms (touch_set_tap_confirm) */
+    Uint32 a_release, back_release; /* a tap's A, MENU's Back: held until then (0: not held) */
     int tap_pending;                /* a quick tap the game has not taken yet (touch_take_tap) */
     float tap_x, tap_y;             /* where, in pixels */
-    Uint32 tap_at;                  /* when */
-} T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1};
+    Uint32 tap_at;
+    /* settings, kept in touch.cfg */
+    int gyro, sens, opacity, show_fps, camera, classic;
+    int shot;                       /* CAMERA was tapped: touch_draw saves the frame */
+    SDL_Sensor *gyro_sensor;
+    float gyro_x, gyro_y;           /* the latest tilt, as right-stick tilt */
+    float fps;
+    int runs;                       /* the stick is on the run marker */
+} T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1};
 
-static void layout(int i, Shape *s) {
-    float W = T.w, H = T.h, inset = W * 0.06f;  /* the panel's rounded corners and the camera housing */
-    float fx = W - inset - 0.22f * H, fy = H - 0.30f * H, d = 0.115f * H, br = 0.068f * H;
-    switch (i) {
-    case C_A: *s = (Shape){fx, fy + d, br, 0}; break;
-    case C_B: *s = (Shape){fx + d, fy, br, 0}; break;
-    case C_X: *s = (Shape){fx - d, fy, br, 0}; break;
-    case C_Y: *s = (Shape){fx, fy - d, br, 0}; break;
-    case C_BACK: *s = (Shape){W * 0.5f - 0.11f * H, 0.08f * H, 0.045f * H, 0}; break;
-    case C_START: *s = (Shape){W * 0.5f + 0.11f * H, 0.08f * H, 0.045f * H, 0}; break;
-    case C_L1: *s = (Shape){inset + 0.14f * H, 0.08f * H, 0.05f * H, 1}; break;
-    case C_L2: *s = (Shape){inset + 0.14f * H, 0.21f * H, 0.05f * H, 1}; break;
-    case C_R1: *s = (Shape){W - inset - 0.14f * H, 0.08f * H, 0.05f * H, 1}; break;
-    case C_R2: *s = (Shape){W - inset - 0.14f * H, 0.21f * H, 0.05f * H, 1}; break;
-    }
+/* ---- settings ---- */
+static void save_settings(void) {
+    FILE *f = fopen("touch.cfg", "w");
+    if (!f) return;
+    fprintf(f, "gyro=%d\nsens=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\n", T.gyro, T.sens, T.opacity, T.show_fps,
+            T.camera, T.classic);
+    fclose(f);
 }
-static float stick_reach(void) { return 0.12f * T.h; }
-
-/* Which control a touch at x, y (pixels) lands on: a button, else a stick by side of the screen. */
-static int hit(float x, float y, int *button) {
-    for (int i = 0; i < N_BUTTONS; i++) {
-        Shape s;
-        layout(i, &s);
-        float dx = fabsf(x - s.x), dy = fabsf(y - s.y), slack = 1.35f;  /* fingers are wider than the art */
-        if (s.rect ? (dx < s.r * 2.2f * slack && dy < s.r * slack) : (dx * dx + dy * dy < s.r * s.r * slack * slack)) {
-            *button = i;
-            return F_BUTTON;
-        }
+static void load_settings(void) {
+    FILE *f = fopen("touch.cfg", "r");
+    char line[64];
+    while (f && fgets(line, sizeof line, f)) {
+        int v;
+        if (sscanf(line, "gyro=%d", &v) == 1 && v >= 0 && v <= 2) T.gyro = v;
+        else if (sscanf(line, "sens=%d", &v) == 1 && v >= 0 && v < 4) T.sens = v;
+        else if (sscanf(line, "opacity=%d", &v) == 1 && v >= 0 && v < 5) T.opacity = v;
+        else if (sscanf(line, "fps=%d", &v) == 1) T.show_fps = !!v;
+        else if (sscanf(line, "camera=%d", &v) == 1) T.camera = !!v;
+        else if (sscanf(line, "classic=%d", &v) == 1) T.classic = !!v;
     }
-    return x < T.w * 0.5f ? F_LSTICK : F_RSTICK;
+    if (f) fclose(f);
+}
+
+/* ---- layout, in points ---- */
+static float inset_x(void) { return T.w > T.h * 1.8f ? 48.0f : 20.0f; }  /* rounded corners, the camera housing */
+
+static Circle button_at(int b) {
+    float W = T.w, H = T.h, ix = inset_x(), top = 14.0f + TOP_R;
+    float fx = W - ix - FIRE_R - 6.0f, fy = H - 18.0f - FIRE_R;
+    switch (b) {
+    case B_FIRE: return (Circle){fx, fy, FIRE_R};
+    /* the arc of three round FIRE, left, up-left and up */
+    case B_AIM: return (Circle){fx - ARC_DIST, fy + 4.0f, 29.0f};
+    case B_ACTION: return (Circle){fx - ARC_DIST * 0.72f, fy - ARC_DIST * 0.72f, 31.0f};
+    case B_RUN: return (Circle){fx + 4.0f, fy - ARC_DIST, 29.0f};
+    case B_LIGHT: return (Circle){fx - ARC_DIST - 29.0f - 30.0f - 28.0f, fy + 10.0f, 28.0f};
+    case B_MAP: return (Circle){ix + TOP_R, top, TOP_R};
+    case B_ITEMS: return (Circle){ix + TOP_R + 2 * TOP_R + 14.0f, top, TOP_R};
+    case B_MENU: return (Circle){W - ix - TOP_R, top, TOP_R};
+    case B_CAMERA: return (Circle){W - ix - TOP_R - 2 * TOP_R - 90.0f, top, TOP_R};
+    }
+    return (Circle){0, 0, 0};
+}
+static Circle tray_at(int t) {
+    Circle m = button_at(B_MENU);
+    return (Circle){m.x - (N_TRAY - 1 - t) * TRAY_STEP, m.y + TOP_R + 16.0f + TRAY_R, TRAY_R};
+}
+static int shown(int b) {
+    if (b == B_CAMERA) return T.camera;
+    if (b == B_MAP || b == B_ITEMS || b == B_MENU) return 1;
+    return !atomic_load(&T.cursor);  /* the cluster: only in play */
+}
+
+/* The nearest shown button within its radius and SLOP of (x, y), or -1. */
+static int button_hit(float x, float y) {
+    int best = -1;
+    float bd = 1e9f;
+    for (int b = 0; b < N_BTN; b++) {
+        if (!shown(b)) continue;
+        Circle c = button_at(b);
+        float d = hypotf(x - c.x, y - c.y) - c.r;
+        if (d < SLOP && d < bd) bd = d, best = b;
+    }
+    return best;
+}
+static int tray_hit(float x, float y) {
+    for (int t = 0; t < N_TRAY; t++) {
+        Circle c = tray_at(t);
+        if (hypotf(x - c.x, y - c.y) < c.r + SLOP) return t;
+    }
+    return -1;
+}
+
+/* ---- the pad ---- */
+static void set_button(int sdl_button, int on) { SDL_JoystickSetVirtualButton(T.joy, sdl_button, on); }
+
+/* Stick tilt from a finger's offset: dead zone, rescaled to reach full at the edge. */
+static void stick_tilt(float dx, float dy, float reach, float dead, float *ox, float *oy) {
+    float len = hypotf(dx, dy) / reach;
+    if (len < dead) { *ox = *oy = 0; return; }
+    float s = (len > 1 ? 1 : (len - dead) / (1 - dead)) / (len * reach);
+    *ox = dx * s, *oy = dy * s;
+}
+
+static int thumb_down(void) {
+    for (int i = 0; i < MAX_FINGERS; i++)
+        if (T.f[i].kind == F_STICK || T.f[i].kind == F_LOOK || (T.f[i].kind == F_BUTTON && btn_cluster[T.f[i].idx])) return 1;
+    return 0;
 }
 
 /* Pushes the fingers' state into the virtual pad. Caller holds T.mx. */
 static void apply(void) {
     if (!T.joy) return;
-    int held[N_BUTTONS] = {0};
-    float stick[2][2] = {{0, 0}, {0, 0}};
+    int pad[N_PAD] = {0}, held[N_BTN] = {0};
+    float lx = 0, ly = 0, rx = 0, ry = 0;
+    T.runs = 0;
     for (int i = 0; i < MAX_FINGERS; i++) {
-        if (T.f[i].kind == F_BUTTON) held[T.f[i].button] = 1;
-        else if (T.f[i].kind == F_LSTICK || T.f[i].kind == F_RSTICK) {
-            float dx = (T.f[i].x - T.f[i].ox) / stick_reach(), dy = (T.f[i].y - T.f[i].oy) / stick_reach();
-            float len = sqrtf(dx * dx + dy * dy);
-            if (len > 1) dx /= len, dy /= len;
-            stick[T.f[i].kind == F_RSTICK][0] = dx;
-            stick[T.f[i].kind == F_RSTICK][1] = dy;
+        float dx = T.f[i].x - T.f[i].ox, dy = T.f[i].y - T.f[i].oy, tx, ty;
+        switch (T.f[i].kind) {
+        case F_STICK:
+            if (hypotf(T.f[i].x - T.f[i].ox, T.f[i].y - (T.f[i].oy - RUN_ABOVE)) < RUN_R + SLOP) {
+                T.runs = 1;  /* on the run marker: straight ahead, running */
+                lx = 0, ly = -1;
+                pad[P_X] = 1;
+            } else {
+                stick_tilt(dx, dy, STICK_R, STICK_DEAD, &tx, &ty);
+                lx = tx, ly = ty;
+            }
+            break;
+        case F_LOOK:
+            stick_tilt(dx, dy, LOOK_R, 0.05f, &tx, &ty);
+            rx += tx, ry += ty;
+            break;
+        case F_BUTTON:
+            held[T.f[i].idx] = 1;
+            if (btn_cluster[T.f[i].idx] && T.f[i].travel > DRAG_LOOK) {
+                stick_tilt(dx, dy, LOOK_R, 0.05f, &tx, &ty);
+                rx += tx, ry += ty;
+            }
+            break;
+        case F_MENU: held[B_MENU] = !T.f[i].off; break;
         }
     }
-    if (T.tap_release) held[C_A] = 1;  /* a quick tap's A, until touch_tick lets go */
-    for (int i = 0; i < N_BUTTONS; i++) {
-        T.held[i] = held[i];
-        /* a trigger rests at the axis's bottom: SDL maps -32768..32767 to 0..32767, so 0 would read as half pulled */
-        if (i == C_L2 || i == C_R2) SDL_JoystickSetVirtualAxis(T.joy, ctl_button[i], held[i] ? 32767 : -32768);
-        else SDL_JoystickSetVirtualButton(T.joy, ctl_button[i], held[i]);
-    }
-    static const int axes[2][2] = {{SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY},
-                                   {SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY}};
-    for (int s = 0; s < 2; s++)
-        for (int a = 0; a < 2; a++) SDL_JoystickSetVirtualAxis(T.joy, axes[s][a], (Sint16)(stick[s][a] * 32767));
+    if (T.gyro == GYRO_ALWAYS || (T.gyro == GYRO_TOUCH && thumb_down())) rx += T.gyro_x, ry += T.gyro_y;
+    rx = rx > 1 ? 1 : rx < -1 ? -1 : rx;
+    ry = ry > 1 ? 1 : ry < -1 ? -1 : ry;
+    if (held[B_FIRE]) pad[P_RT] = pad[P_A] = 1;  /* FIRE: aim and attack */
+    if (held[B_AIM]) pad[P_RT] = 1;
+    if (held[B_ACTION]) pad[P_A] = 1;
+    if (held[B_RUN]) pad[P_X] = 1;
+    if (held[B_LIGHT]) pad[P_B] = 1;
+    if (held[B_MAP]) pad[P_Y] = 1;
+    if (held[B_ITEMS]) pad[P_START] = 1;
+    if (T.a_release) pad[P_A] = 1;
+    if (T.back_release) pad[P_BACK] = 1;
+    memcpy(T.held, held, sizeof held);
+    set_button(SDL_CONTROLLER_BUTTON_A, pad[P_A]);
+    set_button(SDL_CONTROLLER_BUTTON_B, pad[P_B]);
+    set_button(SDL_CONTROLLER_BUTTON_X, pad[P_X]);
+    set_button(SDL_CONTROLLER_BUTTON_Y, pad[P_Y]);
+    set_button(SDL_CONTROLLER_BUTTON_BACK, pad[P_BACK]);
+    set_button(SDL_CONTROLLER_BUTTON_START, pad[P_START]);
+    /* a trigger rests at the axis's bottom: SDL maps -32768..32767 to 0..32767, so 0 would read as half pulled */
+    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, pad[P_RT] ? 32767 : -32768);
+    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_TRIGGERLEFT, -32768);
+    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_LEFTX, (Sint16)(lx * 32767));
+    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_LEFTY, (Sint16)(ly * 32767));
+    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_RIGHTX, (Sint16)(rx * 32767));
+    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_RIGHTY, (Sint16)(ry * 32767));
 }
 
 /* Real controllers attached (anything but our own pad): the overlay shows only without one. */
@@ -113,11 +256,22 @@ static void count_pads(void) {
         if (SDL_IsGameController(i) && SDL_JoystickGetDeviceInstanceID(i) != T.joy_id) real++;
     if (T.visible != !real) rt_log("touch: %s", real ? "a controller is attached, touch controls hidden" : "touch controls shown");
     T.visible = !real;
+    if (real) memset(T.f, 0, sizeof T.f), T.tray = 0;
+}
+
+static void measure(void) {
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(rt_window, &ww, &wh);
+    SDL_GL_GetDrawableSize(rt_window, &T.pw, &T.ph);
+    if (ww <= 0 || wh <= 0) ww = T.pw, wh = T.ph;
+    T.w = ww, T.h = wh, T.k = ww > 0 ? (float)T.pw / ww : 1;
 }
 
 /* Main thread, once the window is open: the virtual pad. Every SDL_GameControllerButton and axis, in SDL's
  * order, so SDL maps it as a standard gamepad and button i of the pad is SDL button i. */
 void touch_init(void) {
+    load_settings();
+    controls_set_classic(T.classic);
     SDL_VirtualJoystickDesc d;
     SDL_zero(d);
     d.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;
@@ -130,8 +284,11 @@ void touch_init(void) {
     int idx = SDL_JoystickAttachVirtualEx(&d);
     if (idx < 0 || !(T.joy = SDL_JoystickOpen(idx))) { rt_log("touch: no virtual pad: %s", SDL_GetError()); return; }
     T.joy_id = SDL_JoystickInstanceID(T.joy);
-    SDL_GL_GetDrawableSize(rt_window, &T.w, &T.h);
+    measure();
     count_pads();
+    if (SDL_InitSubSystem(SDL_INIT_SENSOR) == 0)
+        for (int i = 0; i < SDL_NumSensors() && !T.gyro_sensor; i++)
+            if (SDL_SensorGetDeviceType(i) == SDL_SENSOR_GYRO) T.gyro_sensor = SDL_SensorOpen(i);
     apply();  /* the triggers' resting value: a new virtual pad starts every axis at 0, half pulled for a trigger */
 }
 
@@ -140,15 +297,39 @@ int touch_is_virtual_pad(int device_index) {
     return T.joy && SDL_JoystickGetDeviceInstanceID(device_index) == T.joy_id;
 }
 
+/* ---- the tray ---- */
+static void use_tray(int t) {
+    switch (t) {
+    case T_SENS: T.sens = (T.sens + 1) % 4; break;
+    case T_GYRO: if (T.gyro_sensor) T.gyro = (T.gyro + 1) % 3; break;
+    case T_OPACITY: T.opacity = (T.opacity + 1) % 5; break;
+    case T_FPS: T.show_fps = !T.show_fps; T.tray = 0; break;
+    case T_CAMERA: T.camera = !T.camera; T.tray = 0; break;
+    case T_CHEAT: cheat_set(!cheat_get()); T.tray = 0; break;
+    case T_CONTROLS: T.classic = !T.classic; controls_set_classic(T.classic); break;
+    }
+    save_settings();
+}
+
+/* A quick tap off the controls: the game takes it as a mouse click where a menu shows its cursor (dinput.c),
+ * else as A (touch_tick, if nothing took it). */
+static void tap(float x, float y) {
+    if (!T.tap_a) return;
+    T.tap_pending = 1;
+    T.tap_x = x * T.k, T.tap_y = y * T.k;
+    T.tap_at = SDL_GetTicks();
+}
+
 /* Main thread, for every SDL event (ios.c's event watch): touches and controllers coming and going. */
 void touch_event(const SDL_Event *e) {
     pthread_mutex_lock(&T.mx);
     switch (e->type) {
     case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED: case SDL_JOYDEVICEADDED: case SDL_JOYDEVICEREMOVED:
         count_pads();
+        apply();
         break;
     case SDL_WINDOWEVENT:
-        if (e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) SDL_GL_GetDrawableSize(rt_window, &T.w, &T.h);
+        if (e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) measure();
         break;
     case SDL_FINGERDOWN: case SDL_FINGERMOTION: case SDL_FINGERUP: {
         if (!T.visible || !T.w) break;
@@ -159,24 +340,34 @@ void touch_event(const SDL_Event *e) {
             if (T.f[i].kind == F_NONE && free_slot < 0) free_slot = i;
         }
         if (e->type == SDL_FINGERDOWN && slot < 0 && free_slot >= 0) {
-            int button = 0, kind = hit(x, y, &button);
-            for (int i = 0; i < MAX_FINGERS; i++)  /* one finger per stick: a second one on that side is ignored */
-                if (kind != F_BUTTON && T.f[i].kind == kind) kind = F_NONE;
-            if (kind != F_NONE) T.f[free_slot] = (typeof(T.f[0])){e->tfinger.fingerId, kind, button, x, y, x, y, e->tfinger.timestamp, 0};
+            int kind = F_TAP, idx = 0, b;
+            if (T.tray) {  /* the tray's buttons; a touch anywhere else closes it, and does nothing more */
+                int t = tray_hit(x, y);
+                kind = F_TRAY, idx = t;
+                if (t >= 0) use_tray(t);
+                else T.tray = 0;
+            } else if ((b = button_hit(x, y)) >= 0) {
+                kind = b == B_MENU ? F_MENU : F_BUTTON, idx = b;
+                if (b == B_CAMERA) T.shot = 1;
+            } else if (!atomic_load(&T.cursor)) {
+                kind = x < T.w * STICK_SIDE ? F_STICK : F_LOOK;
+                for (int i = 0; i < MAX_FINGERS; i++)  /* a second finger on the stick's side looks */
+                    if (kind == F_STICK && T.f[i].kind == F_STICK) kind = F_LOOK;
+            }
+            T.f[free_slot] = (typeof(T.f[0])){e->tfinger.fingerId, kind, idx, x, y, x, y, 0, SDL_GetTicks(), 0};
         } else if (slot >= 0 && e->type == SDL_FINGERMOTION) {
             float d = hypotf(x - T.f[slot].ox, y - T.f[slot].oy);
             if (d > T.f[slot].travel) T.f[slot].travel = d;
-            T.f[slot].x = x;
-            T.f[slot].y = y;
-        } else if (slot >= 0 && e->type == SDL_FINGERUP) {
-            /* a quick tap off the buttons (a stick that never moved) confirms: A, held for a moment */
-            int quick = e->tfinger.timestamp - T.f[slot].t0 < 300 && T.f[slot].travel < 0.04f * T.h;
-            /* The game takes it as a mouse click where a menu shows its cursor (dinput.c), else as A. */
-            if (T.tap_a && quick && T.f[slot].kind != F_BUTTON) {
-                T.tap_pending = 1;
-                T.tap_x = T.f[slot].ox, T.tap_y = T.f[slot].oy;
-                T.tap_at = SDL_GetTicks();
+            T.f[slot].x = x, T.f[slot].y = y;
+            if (T.f[slot].kind == F_MENU) {
+                Circle c = button_at(B_MENU);
+                if (hypotf(x - c.x, y - c.y) > c.r + SLOP * 2) T.f[slot].off = 1;  /* slid off: neither tap nor tray */
             }
+        } else if (slot >= 0 && e->type == SDL_FINGERUP) {
+            int quick = SDL_GetTicks() - T.f[slot].t0 < TAP_MS && T.f[slot].travel < 0.04f * T.h + SLOP;
+            if (T.f[slot].kind == F_MENU && !T.f[slot].off) T.back_release = SDL_GetTicks() + 120;  /* a tap: pause */
+            if (quick && (T.f[slot].kind == F_LOOK || T.f[slot].kind == F_STICK || T.f[slot].kind == F_TAP))
+                tap(T.f[slot].ox, T.f[slot].oy);
             T.f[slot].kind = F_NONE;
         }
         apply();
@@ -186,19 +377,39 @@ void touch_event(const SDL_Event *e) {
     pthread_mutex_unlock(&T.mx);
 }
 
-/* Main thread, every pump (ios.c): lets go of a quick tap's A once it has been held long enough to be seen. */
+/* Main thread, every pump (ios.c): MENU's hold, the presses a tap left held, and the gyro. */
 void touch_tick(void) {
     pthread_mutex_lock(&T.mx);
-    /* a tap nothing took (no mouse polled) confirms with A */
-    if (T.tap_pending && SDL_TICKS_PASSED(SDL_GetTicks(), T.tap_at + 150)) {
+    Uint32 now = SDL_GetTicks();
+    int changed = 0;
+    for (int i = 0; i < MAX_FINGERS; i++)
+        if (T.f[i].kind == F_MENU && !T.f[i].off && now - T.f[i].t0 >= MENU_HOLD) {
+            T.tray = 1;
+            T.f[i].kind = F_TRAY, T.f[i].idx = -1;  /* held: the tray, not the pause */
+            changed = 1;
+        }
+    if (T.tap_pending && SDL_TICKS_PASSED(now, T.tap_at + 150)) {  /* a tap nothing took confirms with A */
         T.tap_pending = 0;
-        T.tap_release = SDL_GetTicks() + 90;
-        apply();
+        T.a_release = now + 90;
+        changed = 1;
     }
-    if (T.tap_release && SDL_TICKS_PASSED(SDL_GetTicks(), T.tap_release)) {
-        T.tap_release = 0;
-        apply();
+    if (T.a_release && SDL_TICKS_PASSED(now, T.a_release)) T.a_release = 0, changed = 1;
+    if (T.back_release && SDL_TICKS_PASSED(now, T.back_release)) T.back_release = 0, changed = 1;
+    if (T.gyro_sensor) {
+        float g[3] = {0, 0, 0};
+        SDL_SensorUpdate();
+        if (T.gyro != GYRO_OFF && !T.tray && !SDL_SensorGetData(T.gyro_sensor, g, 3)) {
+            /* landscape: turning the phone left or right is about its long axis, tipping it about its short one;
+             * radians a second, nothing under the dead zone, 1.5 rad/s for full tilt at SENS 1.5 */
+            int flip = SDL_GetDisplayOrientation(0) == SDL_ORIENTATION_LANDSCAPE_FLIPPED ? -1 : 1;
+            float yaw = -g[0] * flip, pitch = -g[1] * flip, s = sens_steps[T.sens] / 1.5f;
+            T.gyro_x = fabsf(yaw) < 0.026f ? 0 : yaw * s;
+            T.gyro_y = fabsf(pitch) < 0.026f ? 0 : pitch * s;
+        } else
+            T.gyro_x = T.gyro_y = 0;
+        changed = 1;
     }
+    if (changed) apply();
     pthread_mutex_unlock(&T.mx);
 }
 
@@ -206,7 +417,7 @@ void touch_tick(void) {
 int touch_take_tap(float *x, float *y, int *w, int *h) {
     pthread_mutex_lock(&T.mx);
     int got = T.tap_pending;
-    if (got) { *x = T.tap_x, *y = T.tap_y, *w = T.w, *h = T.h; T.tap_pending = 0; }
+    if (got) { *x = T.tap_x, *y = T.tap_y, *w = T.pw, *h = T.ph; T.tap_pending = 0; }
     pthread_mutex_unlock(&T.mx);
     return got;
 }
@@ -214,7 +425,7 @@ int touch_take_tap(float *x, float *y, int *w, int *h) {
 /* Game thread: a tap the game had no cursor for confirms, as A. */
 void touch_press_a(void) {
     pthread_mutex_lock(&T.mx);
-    T.tap_release = SDL_GetTicks() + 90;
+    T.a_release = SDL_GetTicks() + 90;
     apply();
     pthread_mutex_unlock(&T.mx);
 }
@@ -226,136 +437,130 @@ void touch_set_tap_confirm(int on) {
     pthread_mutex_unlock(&T.mx);
 }
 
-/* ---- the overlay (game thread) ---- */
-
-static GLuint prog, vao;
-static GLint u_box, u_screen, u_shape, u_color;
-
-static GLuint shader(GLenum type, const char *src) {
-    GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, NULL);
-    glCompileShader(s);
-    GLint ok;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetShaderInfoLog(s, sizeof log, NULL, log);
-        rt_log("touch: overlay shader: %s", log);
-    }
-    return s;
-}
-
-/* One quad per shape, drawn from gl_VertexID with no buffers. Pixel coordinates have y down, as touches do. */
-static void overlay_init(void) {
-    static const char *vs =
-        "#version 300 es\n"
-        "uniform vec4 uBox; uniform vec2 uScreen; out vec2 vPx;\n"
-        "void main() {\n"
-        "  vec2 c = vec2(gl_VertexID & 1, gl_VertexID >> 1);\n"
-        "  vPx = uBox.xy + (c * 2.0 - 1.0) * uBox.zw;\n"
-        "  gl_Position = vec4(vPx / uScreen * 2.0 - 1.0, 0.0, 1.0);\n"
-        "  gl_Position.y = -gl_Position.y;\n"
-        "}\n";
-    static const char *fs =
-        "#version 300 es\nprecision highp float;\n"
-        "uniform vec4 uBox; uniform vec4 uShape; uniform vec4 uColor; in vec2 vPx; out vec4 o;\n"
-        "void main() {\n"
-        "  vec2 p = vPx - uBox.xy;\n"
-        /* uShape: x radius, y half-width of a bar's straight part, z ring thickness (0: filled) */
-        "  vec2 q = vec2(max(abs(p.x) - uShape.y, 0.0), p.y);\n"
-        "  float d = length(q) - uShape.x;\n"
-        "  float a = 1.0 - smoothstep(-1.0, 1.0, d);\n"
-        "  if (uShape.z > 0.0) a *= smoothstep(-1.0, 1.0, d + uShape.z);\n"
-        "  o = vec4(uColor.rgb, uColor.a * a);\n"
-        "}\n";
-    prog = glCreateProgram();
-    glAttachShader(prog, shader(GL_VERTEX_SHADER, vs));
-    glAttachShader(prog, shader(GL_FRAGMENT_SHADER, fs));
-    glLinkProgram(prog);
-    u_box = glGetUniformLocation(prog, "uBox");
-    u_screen = glGetUniformLocation(prog, "uScreen");
-    u_shape = glGetUniformLocation(prog, "uShape");
-    u_color = glGetUniformLocation(prog, "uColor");
-    glGenVertexArrays(1, &vao);
-}
-
-static void draw_shape(float x, float y, float r, float bar, float ring, const float *rgb, float alpha) {
-    glUniform4f(u_box, x, y, r + bar + 2, r + 2);
-    glUniform4f(u_shape, r, bar, ring, 0);
-    glUniform4f(u_color, rgb[0], rgb[1], rgb[2], alpha);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-}
-
-/* Game thread, after the frame is on the window's framebuffer and before the swap: the controls over it.
- * Whatever GL state it changes is put back, so the D3D layer's state cache stays right. */
-void touch_draw(void) {
+/* For the tests: a control's center, in pixels (b < 0: tray button -b-1). */
+void touch_control_center(int b, float *x, float *y) {
     pthread_mutex_lock(&T.mx);
-    int visible = T.visible && T.joy, w = T.w, h = T.h, held[N_BUTTONS];
-    memcpy(held, T.held, sizeof held);
-    typeof(T.f[0]) f[MAX_FINGERS];
-    memcpy(f, T.f, sizeof f);
+    Circle c = b >= 0 ? button_at(b) : tray_at(-b - 1);
+    *x = c.x * T.k, *y = c.y * T.k;
     pthread_mutex_unlock(&T.mx);
-    if (!visible || !w) return;
-    if (!prog) overlay_init();
+}
 
-    GLint old_prog, old_vao, old_fb, vp[4], bsrc, bdst, bsrca, bdsta, beq, beqa;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &old_fb);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_screen_fbo());  /* the window, whatever the frame left bound */
-    GLboolean blend = glIsEnabled(GL_BLEND), scissor = glIsEnabled(GL_SCISSOR_TEST), depth = glIsEnabled(GL_DEPTH_TEST),
-              cull = glIsEnabled(GL_CULL_FACE), stencil = glIsEnabled(GL_STENCIL_TEST), cmask[4];
-    glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &old_vao);
-    glGetIntegerv(GL_VIEWPORT, vp);
-    glGetIntegerv(GL_BLEND_SRC_RGB, &bsrc); glGetIntegerv(GL_BLEND_DST_RGB, &bdst);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &bsrca); glGetIntegerv(GL_BLEND_DST_ALPHA, &bdsta);
-    glGetIntegerv(GL_BLEND_EQUATION_RGB, &beq); glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &beqa);
-    glGetBooleanv(GL_COLOR_WRITEMASK, cmask);
+/* ---- the overlay (game thread) ---- */
+static touchUiDrawList dl;
+static const touchUiColor blue = {0.47f, 0.78f, 1.0f, 1.0f};  /* #78C7FF: holds and lit toggles */
 
-    glUseProgram(prog);
-    glBindVertexArray(vao);
-    glViewport(0, 0, w, h);
-    glEnable(GL_BLEND);
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
-    glBlendEquation(GL_FUNC_ADD);
-    glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST);
-    glColorMask(1, 1, 1, 1);
-    glUniform2f(u_screen, (float)w, (float)h);
+static void draw_button(Circle c, const char *label, int held, int lit, float alpha, float size) {
+    dl.alpha = alpha * (held ? 1.0f : IDLE_ALPHA);
+    touchUiDraw_Circle(&dl, c.x, c.y, c.r, held ? touchUi_White(0.35f) : touchUi_Black(0.35f), 2.0f,
+                       lit ? blue : touchUi_White(0.85f));
+    touchUiDraw_Text(&dl, label, c.x, c.y, size, 1.0f, lit ? blue : touchUi_White(0.95f));
+}
 
-    static const float white[3] = {1, 1, 1};
-    for (int i = 0; i < N_BUTTONS; i++) {
-        Shape s;
-        layout(i, &s);
-        float bar = s.rect ? s.r * 1.2f : 0;
-        draw_shape(s.x, s.y, s.r, bar, 0, ctl_color[i], held[i] ? 0.55f : 0.22f);
-        draw_shape(s.x, s.y, s.r, bar, 0.08f * s.r + 1.5f, white, held[i] ? 0.8f : 0.45f);
+static void build(Uint32 now) {
+    touchUiDraw_Begin(&dl);
+    float alpha = opacity_steps[T.opacity];
+    int cursor = atomic_load(&T.cursor);
+    char label[64];
+    for (int b = 0; b < N_BTN; b++) {
+        if (!shown(b)) continue;
+        Circle c = button_at(b);
+        float size = c.r >= 40 ? 15.0f : c.r >= 28 ? (strlen(btn_label[b]) > 4 ? 10.0f : 11.5f) : 8.5f;
+        draw_button(c, btn_label[b], T.held[b], b == B_RUN && T.runs, alpha, size);
     }
-    /* the sticks: where they are held, else a faint hint of where to put the left thumb */
-    int lheld = 0;
-    for (int i = 0; i < MAX_FINGERS; i++) {
-        if (f[i].kind != F_LSTICK && f[i].kind != F_RSTICK) continue;
-        lheld |= f[i].kind == F_LSTICK;
-        float dx = f[i].x - f[i].ox, dy = f[i].y - f[i].oy, len = sqrtf(dx * dx + dy * dy), reach = stick_reach();
-        if (len > reach) dx *= reach / len, dy *= reach / len;
-        draw_shape(f[i].ox, f[i].oy, reach, 0, 2.5f, white, 0.35f);
-        draw_shape(f[i].ox + dx, f[i].oy + dy, 0.45f * reach, 0, 0, white, 0.4f);
+    /* MENU's hold ring */
+    for (int i = 0; i < MAX_FINGERS; i++)
+        if (T.f[i].kind == F_MENU && !T.f[i].off) {
+            Circle c = button_at(B_MENU);
+            float p = (float)(now - T.f[i].t0) / MENU_HOLD;
+            dl.alpha = 1;
+            touchUiDraw_Arc(&dl, c.x, c.y, c.r + 4, 3.0f, 0, 6.2831853f * (p > 1 ? 1 : p), 1, blue);
+        }
+    /* the stick and its run marker, where the thumb is */
+    for (int i = 0; i < MAX_FINGERS && !cursor; i++) {
+        if (T.f[i].kind != F_STICK) continue;
+        float ox = T.f[i].ox, oy = T.f[i].oy, dx = T.f[i].x - ox, dy = T.f[i].y - oy, len = hypotf(dx, dy);
+        if (len > STICK_R) dx *= STICK_R / len, dy *= STICK_R / len;
+        dl.alpha = alpha;
+        touchUiDraw_Circle(&dl, ox, oy, STICK_R, touchUi_Black(0.25f), 2.0f, touchUi_White(0.6f));
+        touchUiDraw_Circle(&dl, ox + (T.runs ? 0 : dx), oy + (T.runs ? -STICK_R : dy), KNOB_R, touchUi_White(0.55f), 0, touchUi_Clear());
+        touchUiDraw_Circle(&dl, ox, oy - RUN_ABOVE, RUN_R, T.runs ? touchUi_Rgba(0.47f, 0.78f, 1.0f, 0.5f) : touchUi_Black(0.3f),
+                           2.0f, T.runs ? blue : touchUi_White(0.5f));
+        touchUiDraw_Text(&dl, "RUN", ox, oy - RUN_ABOVE, 8.0f, 1.0f, touchUi_White(0.9f));
     }
-    if (!lheld) {
-        float hx = w * 0.06f + 0.24f * h, hy = h - 0.30f * h;
-        draw_shape(hx, hy, stick_reach(), 0, 2.5f, white, 0.2f);
-        draw_shape(hx, hy, 0.45f * stick_reach(), 0, 0, white, 0.15f);
+    if (T.show_fps) {
+        Circle m = button_at(B_MENU);
+        snprintf(label, sizeof label, "%d FPS", (int)(T.fps + 0.5f));
+        dl.alpha = 1;
+        touchUiDraw_Text(&dl, label, m.x - m.r - 34.0f, m.y, 11.0f, 1.0f, touchUi_White(0.85f));
     }
+    if (T.tray) {
+        static const char *const gyro_names[] = {"OFF", "TOUCH", "ALWAYS"};
+        dl.alpha = 1;
+        Circle first = tray_at(0), last = tray_at(N_TRAY - 1);
+        touchUiDraw_RRect(&dl, first.x - TRAY_R - 8, first.y - TRAY_R - 8, last.x - first.x + 2 * TRAY_R + 16, 2 * TRAY_R + 16,
+                          TRAY_R + 8, touchUi_Black(0.55f), 0, touchUi_Clear());
+        for (int t = 0; t < N_TRAY; t++) {
+            int lit = 0, dim = 0;
+            switch (t) {
+            case T_SENS: snprintf(label, sizeof label, "SENS\n%.1fx", sens_steps[T.sens]); dim = T.gyro == GYRO_OFF; break;
+            case T_GYRO:
+                if (!T.gyro_sensor) snprintf(label, sizeof label, "NO\nGYRO"), dim = 1;
+                else snprintf(label, sizeof label, "GYRO\n%s", gyro_names[T.gyro]), lit = T.gyro != GYRO_OFF;
+                break;
+            case T_OPACITY: snprintf(label, sizeof label, "OPAC\n%d%%", (int)(opacity_steps[T.opacity] * 100)); break;
+            case T_FPS: snprintf(label, sizeof label, "FPS"); lit = T.show_fps; break;
+            case T_CAMERA: snprintf(label, sizeof label, "CAM"); lit = T.camera; break;
+            case T_CHEAT: snprintf(label, sizeof label, "CHEAT"); lit = cheat_get(); break;
+            case T_CONTROLS: snprintf(label, sizeof label, "CTRL\n%s", T.classic ? "CLASSIC" : "MODERN"); break;
+            }
+            draw_button(tray_at(t), label, 0, lit, dim ? 0.5f : 1.0f, 6.5f);
+        }
+        dl.alpha = 1;
+        touchUiDraw_Text(&dl, "v" SH2_VERSION_LABEL, (first.x + last.x) / 2, first.y + TRAY_R + 18, 8.0f, 1.0f, touchUi_White(0.45f));
+    }
+}
 
-    glUseProgram(old_prog);
-    glBindVertexArray(old_vao);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, old_fb);
-    glViewport(vp[0], vp[1], vp[2], vp[3]);
-    glBlendFuncSeparate(bsrc, bdst, bsrca, bdsta);
-    glBlendEquationSeparate(beq, beqa);
-    if (!blend) glDisable(GL_BLEND);
-    if (scissor) glEnable(GL_SCISSOR_TEST);
-    if (depth) glEnable(GL_DEPTH_TEST);
-    if (cull) glEnable(GL_CULL_FACE);
-    if (stencil) glEnable(GL_STENCIL_TEST);
-    glColorMask(cmask[0], cmask[1], cmask[2], cmask[3]);
+#ifndef SH2_IOS
+/* Elsewhere (the tests), CAMERA's photos are PPM files in the game folder; iOS saves them to Photos. */
+void touch_save_photo(const unsigned char *rgba, int w, int h) {
+    static int n;
+    char path[64];
+    snprintf(path, sizeof path, "photo-%d.ppm", n++);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "P6 %d %d 255\n", w, h);
+    for (int i = 0; i < w * h; i++) fwrite(rgba + 4 * i, 1, 3, f);
+    fclose(f);
+}
+#endif
+
+/* Game thread, over each presented frame: the overlay, and CAMERA's photos. */
+void touch_draw(void) {
+    static Uint32 fps_at;
+    static int frames;
+    Uint32 now = SDL_GetTicks();
+    frames++;
+    if (now - fps_at >= FPS_PERIOD) {
+        T.fps = frames * 1000.0f / (now - fps_at ? now - fps_at : 1);
+        frames = 0, fps_at = now;
+    }
+    atomic_store(&T.cursor, game_cursor_shown());
+    pthread_mutex_lock(&T.mx);
+    if (!T.visible || !T.pw) { pthread_mutex_unlock(&T.mx); return; }
+    int shot = T.shot, pw = T.pw, ph = T.ph;
+    float k = T.k;
+    T.shot = 0;
+    build(now);
+    pthread_mutex_unlock(&T.mx);
+    GLuint fbo = gl_screen_fbo();
+    if (shot) {  /* CAMERA: the frame as the game drew it, then with the buttons */
+        unsigned char *px = touchUiRender_ReadRGBA(fbo, pw, ph);
+        if (px) touch_save_photo(px, pw, ph), free(px);
+    }
+    touchUiRender_Draw(&dl, fbo, pw, ph, k);
+    if (shot) {
+        unsigned char *px = touchUiRender_ReadRGBA(fbo, pw, ph);
+        if (px) touch_save_photo(px, pw, ph), free(px);
+    }
 }
 #endif

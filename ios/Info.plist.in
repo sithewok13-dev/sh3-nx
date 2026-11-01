@@ -74,6 +74,8 @@
 			<string>ExtendedGamepad</string>
 		</dict>
 	</array>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>CAMERA saves your photos of the game to Photos.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Bluetooth is used for game controllers.</string>
 </dict>

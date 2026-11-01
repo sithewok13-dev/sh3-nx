@@ -361,6 +361,7 @@ METHOD(dev_Present, 5) {
         free(px);
     }
     cheat_tick();      /* the CHEAT toggle's health and ammo (game/cheat.c) */
+    controls_tick();   /* modern or classic controls (game/controls.c) */
 #if defined(SH2_IOS) || defined(SH2_TOUCH)
     touch_draw();      /* the on-screen controls, over the frame */
 #endif

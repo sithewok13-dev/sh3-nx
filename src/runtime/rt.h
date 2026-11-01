@@ -106,7 +106,12 @@ int touch_take_tap(float *x, float *y, int *w, int *h);  /* dinput.c: a pending 
 void touch_press_a(void);
 void cheat_set(int on);                       /* game/cheat.c: everything (health, guns, ammo, items) */
 int cheat_get(void);
-void cheat_tick(void);                        /* game thread, every presented frame */                     /* dinput.c: a tap with no cursor to click confirms */
+void cheat_tick(void);                        /* game thread, every presented frame */
+void controls_set_classic(int on);            /* game/controls.c: the original controls instead of modern */
+void controls_tick(void);                     /* game thread, every presented frame */
+int game_cursor_shown(void);                  /* dinput.c: the game shows its mouse cursor (a menu) */
+void touch_save_photo(const unsigned char *rgba, int w, int h);  /* CAMERA: top row first; ios_photos.m */
+void touch_control_center(int b, float *x, float *y);           /* tests: a control's center in pixels */                     /* dinput.c: a tap with no cursor to click confirms */
 #endif
 void rt_window_open(void);
 
