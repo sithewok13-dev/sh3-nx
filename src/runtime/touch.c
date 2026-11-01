@@ -37,9 +37,11 @@ static struct {
     SDL_JoystickID joy_id;
     int w, h;                       /* the window in pixels */
     int visible;                    /* no real controller attached */
-    struct { SDL_FingerID id; int kind, button; float ox, oy, x, y; } f[MAX_FINGERS];
+    struct { SDL_FingerID id; int kind, button; float ox, oy, x, y; Uint32 t0; float travel; } f[MAX_FINGERS];
     int held[N_BUTTONS];
-} T = {.mx = PTHREAD_MUTEX_INITIALIZER};
+    int tap_a;                      /* a quick tap off the controls presses A (touch_set_tap_confirm) */
+    Uint32 tap_release;             /* when the A a tap pressed lets go (0: none held) */
+} T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1};
 
 static void layout(int i, Shape *s) {
     float W = T.w, H = T.h, inset = W * 0.06f;  /* the panel's rounded corners and the camera housing */
@@ -88,6 +90,7 @@ static void apply(void) {
             stick[T.f[i].kind == F_RSTICK][1] = dy;
         }
     }
+    if (T.tap_release) held[C_A] = 1;  /* a quick tap's A, until touch_tick lets go */
     for (int i = 0; i < N_BUTTONS; i++) {
         T.held[i] = held[i];
         /* a trigger rests at the axis's bottom: SDL maps -32768..32767 to 0..32767, so 0 would read as half pulled */
@@ -156,16 +159,39 @@ void touch_event(const SDL_Event *e) {
             int button = 0, kind = hit(x, y, &button);
             for (int i = 0; i < MAX_FINGERS; i++)  /* one finger per stick: a second one on that side is ignored */
                 if (kind != F_BUTTON && T.f[i].kind == kind) kind = F_NONE;
-            if (kind != F_NONE) T.f[free_slot] = (typeof(T.f[0])){e->tfinger.fingerId, kind, button, x, y, x, y};
+            if (kind != F_NONE) T.f[free_slot] = (typeof(T.f[0])){e->tfinger.fingerId, kind, button, x, y, x, y, e->tfinger.timestamp, 0};
         } else if (slot >= 0 && e->type == SDL_FINGERMOTION) {
+            float d = hypotf(x - T.f[slot].ox, y - T.f[slot].oy);
+            if (d > T.f[slot].travel) T.f[slot].travel = d;
             T.f[slot].x = x;
             T.f[slot].y = y;
-        } else if (slot >= 0 && e->type == SDL_FINGERUP)
+        } else if (slot >= 0 && e->type == SDL_FINGERUP) {
+            /* a quick tap off the buttons (a stick that never moved) confirms: A, held for a moment */
+            int quick = e->tfinger.timestamp - T.f[slot].t0 < 300 && T.f[slot].travel < 0.04f * T.h;
+            if (T.tap_a && quick && T.f[slot].kind != F_BUTTON) T.tap_release = SDL_GetTicks() + 90;
             T.f[slot].kind = F_NONE;
+        }
         apply();
         break;
     }
     }
+    pthread_mutex_unlock(&T.mx);
+}
+
+/* Main thread, every pump (ios.c): lets go of a quick tap's A once it has been held long enough to be seen. */
+void touch_tick(void) {
+    pthread_mutex_lock(&T.mx);
+    if (T.tap_release && SDL_TICKS_PASSED(SDL_GetTicks(), T.tap_release)) {
+        T.tap_release = 0;
+        apply();
+    }
+    pthread_mutex_unlock(&T.mx);
+}
+
+/* The launcher handles its own taps (it knows where its items are): it turns tap-to-confirm off meanwhile. */
+void touch_set_tap_confirm(int on) {
+    pthread_mutex_lock(&T.mx);
+    T.tap_a = on;
     pthread_mutex_unlock(&T.mx);
 }
 
@@ -241,7 +267,9 @@ void touch_draw(void) {
     if (!visible || !w) return;
     if (!prog) overlay_init();
 
-    GLint old_prog, old_vao, vp[4], bsrc, bdst, bsrca, bdsta, beq, beqa;
+    GLint old_prog, old_vao, old_fb, vp[4], bsrc, bdst, bsrca, bdsta, beq, beqa;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &old_fb);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_screen_fbo());  /* the window, whatever the frame left bound */
     GLboolean blend = glIsEnabled(GL_BLEND), scissor = glIsEnabled(GL_SCISSOR_TEST), depth = glIsEnabled(GL_DEPTH_TEST),
               cull = glIsEnabled(GL_CULL_FACE), stencil = glIsEnabled(GL_STENCIL_TEST), cmask[4];
     glGetIntegerv(GL_CURRENT_PROGRAM, &old_prog);
@@ -288,6 +316,7 @@ void touch_draw(void) {
 
     glUseProgram(old_prog);
     glBindVertexArray(old_vao);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, old_fb);
     glViewport(vp[0], vp[1], vp[2], vp[3]);
     glBlendFuncSeparate(bsrc, bdst, bsrca, bdsta);
     glBlendEquationSeparate(beq, beqa);

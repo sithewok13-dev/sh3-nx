@@ -8,6 +8,7 @@
 #include <stdarg.h>
 
 SDL_Window *rt_window;
+GLuint gl_screen_fbo(void) { return 0; }  /* the window: framebuffer 0 here, as on every platform but iOS */
 void rt_log(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -118,8 +119,30 @@ int main(int argc, char **argv) {
     const uint8_t *a = px + 4 * ((H - 1 - (int)(fy + d)) * W + (int)fx);
     check("the A button is drawn, green while held", a[1] > a[0] + 30 && a[1] > a[2] + 30);
 
-    /* a real controller (another pad) hides the controls and stops their input */
+    /* a quick tap off the controls confirms: A, let go a moment later (touch_tick); a drag does not */
     finger(SDL_FINGERUP, 7, 0, 0);
+    finger(SDL_FINGERUP, 5, 0, 0);
+    finger(SDL_FINGERDOWN, 10, W * 0.62f, H * 0.4f);
+    finger(SDL_FINGERUP, 10, W * 0.62f, H * 0.4f);
+    check("a quick tap presses A", SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
+    touch_tick();
+    SDL_JoystickUpdate();
+    check("and A is still held for a moment", SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
+    SDL_Delay(120);
+    touch_tick();
+    SDL_JoystickUpdate();
+    check("then let go", !SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
+    finger(SDL_FINGERDOWN, 11, W * 0.25f, H * 0.5f);
+    finger(SDL_FINGERMOTION, 11, W * 0.25f + 0.2f * H, H * 0.5f);
+    finger(SDL_FINGERUP, 11, 0, 0);
+    check("a drag is not a tap", !SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
+    touch_set_tap_confirm(0);
+    finger(SDL_FINGERDOWN, 12, W * 0.62f, H * 0.4f);
+    finger(SDL_FINGERUP, 12, W * 0.62f, H * 0.4f);
+    check("with tap-to-confirm off (the launcher), a tap presses nothing", !SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
+    touch_set_tap_confirm(1);
+
+    /* a real controller (another pad) hides the controls and stops their input */
     SDL_VirtualJoystickDesc d2;
     SDL_zero(d2);
     d2.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;

@@ -100,6 +100,8 @@ void touch_init(void);                        /* main thread, once the window is
 void touch_event(const union SDL_Event *e);   /* main thread, every event */
 void touch_draw(void);                        /* game thread, over the presented frame */
 int touch_is_virtual_pad(int device_index);   /* dinput.c: a real controller wins over it */
+void touch_tick(void);                        /* main thread, every pump: ends a quick tap's A press */
+void touch_set_tap_confirm(int on);           /* a quick tap off the controls presses A (on by default) */
 #endif
 void rt_window_open(void);
 

@@ -465,7 +465,7 @@ void res_snapshot_front(void) {  /* called by Present with the back buffer bound
     }
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, front_fbo);
     glBlitFramebuffer(0, 0, front_w, front_h, 0, 0, front_w, front_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_screen_fbo());  /* back to the window (not 0 on iOS) */
 }
 
 /* GetFrontBuffer: the last presented image into an A8R8G8B8 image surface. */

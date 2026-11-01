@@ -263,7 +263,23 @@ static void ini_save(void) {
 
 /* ---- input ---- */
 
-enum { IN_NONE, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_OK, IN_BACK };
+enum { IN_NONE, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_OK, IN_BACK, IN_TAP };
+
+/* A tap (IN_TAP): where, in the 1280x720 canvas, as present() letterboxes it into the window. */
+static int tap_x, tap_y;
+static void tap_to_canvas(float fx, float fy) {
+    int ww, wh;
+    SDL_GL_GetDrawableSize(rt_window, &ww, &wh);
+    float s = fminf((float)ww / CW, (float)wh / CH);
+    tap_x = (int)((fx * ww - (ww - CW * s) / 2) / s);
+    tap_y = (int)((fy * wh - (wh - CH * s) / 2) / s);
+}
+/* The row a tap is on: rows of `step` from `top` (a little slack above), -1 if none of the n. */
+static int tap_row(int top, int step, int n) {
+    int r = (tap_y - top + 12) / step;
+    return tap_y >= top - 12 && r < n ? r : -1;
+}
+static int is_ok(int in) { return in == IN_OK || in == IN_TAP; }
 
 static int poll_input(void) {
     SDL_Event e;
@@ -271,6 +287,7 @@ static int poll_input(void) {
         switch (e.type) {
         case SDL_QUIT: exit(0);
         case SDL_CONTROLLERDEVICEADDED: SDL_GameControllerOpen(e.cdevice.which); break;
+        case SDL_FINGERUP: tap_to_canvas(e.tfinger.x, e.tfinger.y); return IN_TAP;
         case SDL_KEYDOWN:
             switch (e.key.keysym.sym) {
             case SDLK_UP: return IN_UP;
@@ -370,6 +387,12 @@ static void options(void) {
         present(canvas, CW, CH);
         int in = poll_input();
         if (in == IN_NONE) continue;
+        if (in == IN_TAP) {  /* a row: select it; the selected one again changes its value, or goes back */
+            int r = tap_row(190, 56, N_OPTS + 1);
+            if (r < 0) continue;
+            if (r != sel) { sel = r; dirty = 1; sound(SND_CURSOR); continue; }
+            in = r < N_OPTS ? IN_RIGHT : IN_OK;
+        }
         dirty = 1;
         Opt *o = sel < N_OPTS ? &opts[sel] : NULL;
         if (in != IN_BACK) sound(!o && in == IN_OK ? SND_OK : SND_CURSOR);
@@ -432,7 +455,7 @@ static void splash(const uint8_t *img, const uint8_t *end, Uint64 wait_ms, const
     while (SDL_GetTicks64() - t0 < wait_ms) { poll_input(); present(canvas, CW, CH); }
     static uint32_t pic[CW * CH];
     memcpy(pic, canvas, sizeof pic);
-    for (Uint64 t1 = SDL_GetTicks64(), t = 0; poll_input() != IN_OK || t < FADE_MS;) {
+    for (Uint64 t1 = SDL_GetTicks64(), t = 0; !is_ok(poll_input()) || t < FADE_MS;) {
         t = SDL_GetTicks64() - t1;
         int k = t >= FADE_MS ? 256 : (int)(t * 256 / FADE_MS);  /* the text's colour from black up */
         memcpy(canvas, pic, sizeof pic);
@@ -452,6 +475,9 @@ void launcher_run(void) {
 #endif
     rt_window_open();
     gl_context_open();
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    touch_set_tap_confirm(0);  /* the launcher reads taps itself: where they land picks the item */
+#endif
     int fh;
     font_px = decode(font_bmp, font_bmp_end, &font_w, &fh);
     for (int i = 0; font_px && i < font_w * fh; i++) font_px[i] = font_px[i] << 24 | 0xFFFFFFu;  /* gray = coverage */
@@ -471,6 +497,12 @@ void launcher_run(void) {
         if (dirty) { draw_menu(sel); dirty = 0; }
         present(canvas, CW, CH);
         int in = poll_input();
+        if (in == IN_TAP) {  /* Play or Options, tapped */
+            int r = tap_row(470, 70, 2);
+            if (r < 0) continue;
+            if (r != sel) sel = r, dirty = 1;
+            in = IN_OK;
+        }
         if (in == IN_UP || in == IN_DOWN) sel ^= 1, dirty = 1, sound(SND_CURSOR);
         if (in == IN_OK) sound(SND_OK);
         if (in == IN_OK && sel == 0) { fade(0); break; }
@@ -486,6 +518,9 @@ void launcher_run(void) {
     glBindTexture(GL_TEXTURE_2D, 0);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    touch_set_tap_confirm(1);  /* in the game, a quick tap confirms (A) */
+#endif
     free(font_px);
     free(logo_px);
     sound_close();

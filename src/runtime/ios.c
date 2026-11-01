@@ -193,6 +193,7 @@ _Noreturn void ios_main_loop(void) {
     atomic_store(&game_running, 1);
     for (;;) {
         SDL_PumpEvents();
+        touch_tick();
         SDL_Delay(4);
     }
 }
