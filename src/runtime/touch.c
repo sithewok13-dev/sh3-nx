@@ -101,6 +101,7 @@ static struct {
     SDL_Sensor *gyro_sensor;
     float gyro_x, gyro_y;           /* the latest tilt, as right-stick tilt */
     float fps;
+    int sound;                      /* CHEAT's sound to play once T.mx is let go: 1 off, 2 on (0 none) */
     int runs;                       /* the stick is pushed onto the run marker */
     int run_marker;                 /* placed (there was room above the stick) */
     float run_x, run_y, run_deg;    /* where, and its direction from the stick (degrees, counter-clockwise) */
@@ -303,6 +304,13 @@ static void measure(void) {
 /* Main thread, once the window is open: the virtual pad. Every SDL_GameControllerButton and axis, in SDL's
  * order, so SDL maps it as a standard gamepad and button i of the pad is SDL button i. */
 void touch_init(void) {
+    /* recursive: should an SDL call made while T.mx is held still post an event back into touch_event, it carries
+     * on instead of hanging the main thread (touches would stop reaching the game) */
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&T.mx, &attr);
+    pthread_mutexattr_destroy(&attr);
     load_settings();
     controls_set_classic(T.classic);
     SDL_VirtualJoystickDesc d;
@@ -331,10 +339,19 @@ int touch_is_virtual_pad(int device_index) {
 }
 
 /* ---- the tray ---- */
+/* Caller holds T.mx. The sound is played after it is let go (play_sound): opening the audio device posts SDL
+ * events, which come straight back into touch_event through ios.c's event watch. */
 static void toggle_cheat(void) {
     int on = !cheat_get();
     cheat_set(on);
-    touch_sound_cheat(on);
+    T.sound = on ? 2 : 1;
+}
+static void play_sound(void) {  /* without T.mx */
+    pthread_mutex_lock(&T.mx);
+    int s = T.sound;
+    T.sound = 0;
+    pthread_mutex_unlock(&T.mx);
+    if (s) touch_sound_cheat(s == 2);
 }
 
 static void use_tray(int t) {
@@ -361,6 +378,13 @@ static void tap(float x, float y) {
 
 /* Main thread, for every SDL event (ios.c's event watch): touches and controllers coming and going. */
 void touch_event(const SDL_Event *e) {
+    /* Only what the controls need: nothing else takes T.mx (sensor readings, audio devices and the rest arrive
+     * here too, some posted by SDL calls made while T.mx is held) */
+    switch (e->type) {
+    case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED: case SDL_JOYDEVICEADDED: case SDL_JOYDEVICEREMOVED:
+    case SDL_WINDOWEVENT: case SDL_FINGERDOWN: case SDL_FINGERMOTION: case SDL_FINGERUP: break;
+    default: return;
+    }
     pthread_mutex_lock(&T.mx);
     switch (e->type) {
     case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED: case SDL_JOYDEVICEADDED: case SDL_JOYDEVICEREMOVED:
@@ -415,6 +439,7 @@ void touch_event(const SDL_Event *e) {
     }
     }
     pthread_mutex_unlock(&T.mx);
+    play_sound();
 }
 
 /* Main thread, every pump (ios.c): MENU's hold, the presses a tap left held, and the gyro. */
@@ -441,8 +466,8 @@ void touch_tick(void) {
     if (T.a_release && SDL_TICKS_PASSED(now, T.a_release)) T.a_release = 0, changed = 1;
     if (T.back_release && SDL_TICKS_PASSED(now, T.back_release)) T.back_release = 0, changed = 1;
     if (T.gyro_sensor) {
-        float g[3] = {0, 0, 0};
-        SDL_SensorUpdate();
+        float g[3] = {0, 0, 0};  /* (SDL_PumpEvents reads the sensor: calling SDL_SensorUpdate here would post an
+                                    * event into touch_event while T.mx is held, and the main thread would hang) */
         if (T.gyro != GYRO_OFF && !T.tray && !SDL_SensorGetData(T.gyro_sensor, g, 3)) {
             /* landscape: turning the phone left or right is about its long axis, tipping it about its short one;
              * radians a second, nothing under the dead zone, 1.5 rad/s for full tilt at SENS 1.5 */
@@ -456,6 +481,7 @@ void touch_tick(void) {
     }
     if (changed) apply();
     pthread_mutex_unlock(&T.mx);
+    play_sound();
 }
 
 /* Game thread (the mouse's GetDeviceData): takes a pending tap, in pixels of the drawable. */

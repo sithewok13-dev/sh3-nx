@@ -48,6 +48,7 @@ static void finger(Uint32 type, SDL_FingerID id, float x, float y) {
     SDL_JoystickUpdate();  /* what the main thread's SDL_PumpEvents does on the phone */
     SDL_GameControllerUpdate();
 }
+static int SDLCALL watch(void *u, SDL_Event *e) { (void)u; touch_event(e); return 1; }
 static void at(int b, float *x, float *y) { touch_control_center(b, x, y); }
 static void press(SDL_FingerID id, int b) { float x, y; at(b, &x, &y); finger(SDL_FINGERDOWN, id, x, y); }
 static void tick(void) { touch_tick(); SDL_JoystickUpdate(); SDL_GameControllerUpdate(); }
@@ -311,6 +312,26 @@ int main(int argc, char **argv) {
     }
     free(on_snd);
     free(off_snd);
+
+    /* as on the phone, every SDL event also goes through touch_event (ios.c's event watch), including the ones
+     * SDL posts while the overlay is busy: CHEAT's sound opening an audio device, sensor readings. None may hang
+     * it (on the phone a gyro reading did, and touches stopped reaching the game). */
+    SDL_AddEventWatch(watch, NULL);
+    press(19, B_CHEAT);
+    SDL_Delay(520);
+    tick();
+    finger(SDL_FINGERUP, 19, 0, 0);
+    SDL_Event sensor;
+    SDL_zero(sensor);
+    sensor.type = SDL_SENSORUPDATE;
+    SDL_PushEvent(&sensor);
+    check("events coming back through the watch don't hang it", cheat == 0);
+    press(19, B_CHEAT);
+    SDL_Delay(520);
+    tick();
+    finger(SDL_FINGERUP, 19, 0, 0);
+    check("and CHEAT still works after", cheat == 1);
+    SDL_DelEventWatch(watch, NULL);
 
     /* in the game's menus (its cursor shown) only the top row is a control; a touch elsewhere is a click */
     SDL_Delay(200);  /* the earlier taps' A, pressed and let go (the phone ticks all the time) */
