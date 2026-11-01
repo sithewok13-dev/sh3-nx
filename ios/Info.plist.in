@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>@SH2_IOS_VERSION@</string>
 	<key>CFBundleVersion</key>
-	<string>@SH2_IOS_VERSION@</string>
+	<string>@SH2_IOS_BUILD@</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>

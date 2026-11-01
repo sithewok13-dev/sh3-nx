@@ -33,6 +33,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     "-framework QuartzCore" "-framework UIKit")
   set(SH2_IOS_BUNDLE_ID "com.example.sh3-nx" CACHE STRING "The app's bundle identifier")
   set(SH2_IOS_VERSION "0.06")
+  set(SH2_IOS_BUILD "1" CACHE STRING "The build number (CFBundleVersion): the cloud build passes its run number")
+  target_compile_definitions(sh3 PRIVATE SH2_VERSION_LABEL="${SH2_IOS_VERSION} (${SH2_IOS_BUILD})")
   configure_file(ios/Info.plist.in ${CMAKE_BINARY_DIR}/Info.plist @ONLY)
   set_target_properties(sh3 PROPERTIES
     OUTPUT_NAME SH3
