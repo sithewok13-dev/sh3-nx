@@ -84,6 +84,7 @@ void rt_pump_events(void);
 /* SDL_PollEvent, except on iOS, where the main thread pumps and the game thread only takes what it queued. */
 union SDL_Event;
 int rt_poll_event(union SDL_Event *e);
+void rt_window_open(void);
 
 /* ios.c (SH2_IOS): the main thread opens the window and pumps events, the game runs on its own thread. */
 #ifdef SH2_IOS
@@ -104,6 +105,14 @@ void touch_tick(void);                        /* main thread, every pump: ends a
 void touch_set_tap_confirm(int on);           /* a quick tap off the controls presses A (on by default) */
 int touch_take_tap(float *x, float *y, int *w, int *h);  /* dinput.c: a pending tap, in drawable pixels */
 void touch_press_a(void);
+void touch_sound_cheat(int on);              /* touch_sound.c: CHEAT's sound */
+float *touch_sound_make(int on, int *n);     /* its samples (mono, 48 kHz floats; the caller frees them) */
+int touch_running(float *x, float *y);       /* tests: the stick is on the run marker (and where it is) */
+void touch_save_photo(const unsigned char *rgba, int w, int h);  /* CAMERA: top row first; ios_photos.m */
+void touch_control_center(int b, float *x, float *y);           /* tests: a control's center in pixels */
+#endif
+
+/* the game's side of the touch controls, on every platform (d3d8.c calls the ticks each frame) */
 void cheat_set(int on);                       /* game/cheat.c: everything (health, guns, ammo, items) */
 int cheat_get(void);
 void cheat_tick(void);                        /* game thread, every presented frame */
@@ -113,13 +122,6 @@ enum { SCREEN_PLAY, SCREEN_CUTSCENE, SCREEN_PAUSE, SCREEN_MENU, SCREEN_GAME_MENU
 int game_screen(void);                        /* game/controls.c: which screen the game is on (SCREEN_*) */
 int game_pause_tap(float y480);               /* a tap on the pause menu: its row picked (1) or nothing there (0) */
 int game_flashlight_on(void);                 /* game/controls.c: the flashlight is on */
-void touch_sound_cheat(int on);              /* touch_sound.c: CHEAT's sound */
-float *touch_sound_make(int on, int *n);     /* its samples (mono, 48 kHz floats; the caller frees them) */
-int touch_running(float *x, float *y);       /* tests: the stick is on the run marker (and where it is) */
-void touch_save_photo(const unsigned char *rgba, int w, int h);  /* CAMERA: top row first; ios_photos.m */
-void touch_control_center(int b, float *x, float *y);           /* tests: a control's center in pixels */                     /* dinput.c: a tap with no cursor to click confirms */
-#endif
-void rt_window_open(void);
 
 /* kernel32.c */
 void rt_thread_init_main(uint32_t stack_size);
