@@ -102,6 +102,8 @@ void touch_draw(void);                        /* game thread, over the presented
 int touch_is_virtual_pad(int device_index);   /* dinput.c: a real controller wins over it */
 void touch_tick(void);                        /* main thread, every pump: ends a quick tap's A press */
 void touch_set_tap_confirm(int on);           /* a quick tap off the controls presses A (on by default) */
+int touch_take_tap(float *x, float *y, int *w, int *h);  /* dinput.c: a pending tap, in drawable pixels */
+void touch_press_a(void);                     /* dinput.c: a tap with no cursor to click confirms */
 #endif
 void rt_window_open(void);
 

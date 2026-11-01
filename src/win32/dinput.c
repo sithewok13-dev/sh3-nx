@@ -1,6 +1,7 @@
 /* DINPUT8: a keyboard and one gamepad, read from SDL. */
 #include "../runtime/rt.h"
 #include <SDL2/SDL.h>
+#include <math.h>
 
 enum { DEV_KEYBOARD = 1, DEV_MOUSE, DEV_PAD };
 /* Device object: vtable, kind, data size from SetDataFormat, axis range. */
@@ -280,9 +281,64 @@ METHOD(dev_SendForceFeedbackCommand, 2) {
 }
 METHOD(dev_GetForceFeedbackState, 2) { MEM32(ARG(1)) = ff_muted ? 0x20 : 0x10; return 0; }
 METHOD(dev_Escape, 2) { return 0x80004001u; }
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+/* ---- taps as mouse clicks ----
+ * The game reads the mouse as buffered data (sub_0045A4E0): X and Y movements (offsets 0 and 4) added to its
+ * cursor, kept at 0x941358/0x94135C in its 640x480 2D space, and button presses (offset 12 and up, data 0x80)
+ * whose edges it keeps for the menus. A screen that takes the mouse turns its cursor on (0x941365, set through
+ * sub_0045A710). So a tap there moves the cursor onto the tapped point, then presses and releases the left
+ * button over the next two polls; anywhere else it confirms with A (touch.c). */
+#define MOUSE_X   0x00941358u
+#define MOUSE_Y   0x0094135Cu
+#define MOUSE_ON  0x00941365u
+extern uint32_t ee_res_w, ee_res_h;  /* d3d8.c: the image's size, fitted into the window by Present */
+
+/* drawable pixels -> the game's 2D space: the image keeps its aspect in the window, the 2D its 4:3 inside it */
+static void tap_to_game(float x, float y, int w, int h, int32_t *gx, int32_t *gy) {
+    float iw = ee_res_w ? ee_res_w : 640, ih = ee_res_h ? ee_res_h : 480;
+    float s = fminf(w / iw, h / ih), dw = iw * s, dh = ih * s, dx = (w - dw) / 2, dy = (h - dh) / 2;
+    float aw = fminf(dh * 4.0f / 3.0f, dw), ax = dx + (dw - aw) / 2;
+    float fx = (x - ax) / aw * 640.0f, fy = (y - dy) / dh * 480.0f;
+    *gx = fx < 0 ? 0 : fx > 640 ? 640 : (int32_t)fx;
+    *gy = fy < 0 ? 0 : fy > 480 ? 480 : (int32_t)fy;
+}
+
+static int mouse_events(uint32_t buf, uint32_t size, uint32_t cap) {
+    static int step;  /* 1: press the button next, 2: release it next */
+    uint32_t ev[3][2], n = 0;
+    float x, y;
+    int w, h;
+    if (step == 1) { ev[n][0] = 12, ev[n][1] = 0x80; n++; step = 2; }
+    else if (step == 2) { ev[n][0] = 12, ev[n][1] = 0; n++; step = 0; }
+    else if (touch_take_tap(&x, &y, &w, &h)) {
+        if (MEM8(MOUSE_ON) && w > 0 && h > 0) {
+            int32_t gx, gy;
+            tap_to_game(x, y, w, h, &gx, &gy);
+            ev[n][0] = 0, ev[n][1] = (uint32_t)(gx - (int32_t)MEM32(MOUSE_X)); n++;
+            ev[n][0] = 4, ev[n][1] = (uint32_t)(gy - (int32_t)MEM32(MOUSE_Y)); n++;
+            step = 1;
+        } else
+            touch_press_a();
+    }
+    if (n > cap) n = cap;
+    for (uint32_t i = 0; buf && i < n; i++) {
+        uint32_t o = buf + i * size;
+        if (size >= 8) { MEM32(o) = ev[i][0]; MEM32(o + 4) = ev[i][1]; }
+        for (uint32_t b = 8; b + 4 <= size; b += 4) MEM32(o + b) = b == 8 ? SDL_GetTicks() : 0;
+    }
+    return buf ? n : 0;
+}
+#endif
+
 METHOD(dev_GetDeviceData, 5) {
     static int logged;
     if (!logged++) rt_log("GetDeviceData on device kind %u (1 keyboard, 2 mouse, 3 pad), buffer %u", DEV_KIND(THIS), MEM32(ARG(3)));
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    if (DEV_KIND(THIS) == DEV_MOUSE) {
+        MEM32(ARG(3)) = mouse_events(ARG(2), ARG(1), MEM32(ARG(3)));
+        return 0;
+    }
+#endif
     MEM32(ARG(3)) = 0;
     return 0;
 }

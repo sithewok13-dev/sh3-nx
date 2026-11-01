@@ -41,6 +41,9 @@ static struct {
     int held[N_BUTTONS];
     int tap_a;                      /* a quick tap off the controls presses A (touch_set_tap_confirm) */
     Uint32 tap_release;             /* when the A a tap pressed lets go (0: none held) */
+    int tap_pending;                /* a quick tap the game has not taken yet (touch_take_tap) */
+    float tap_x, tap_y;             /* where, in pixels */
+    Uint32 tap_at;                  /* when */
 } T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1};
 
 static void layout(int i, Shape *s) {
@@ -168,7 +171,12 @@ void touch_event(const SDL_Event *e) {
         } else if (slot >= 0 && e->type == SDL_FINGERUP) {
             /* a quick tap off the buttons (a stick that never moved) confirms: A, held for a moment */
             int quick = e->tfinger.timestamp - T.f[slot].t0 < 300 && T.f[slot].travel < 0.04f * T.h;
-            if (T.tap_a && quick && T.f[slot].kind != F_BUTTON) T.tap_release = SDL_GetTicks() + 90;
+            /* The game takes it as a mouse click where a menu shows its cursor (dinput.c), else as A. */
+            if (T.tap_a && quick && T.f[slot].kind != F_BUTTON) {
+                T.tap_pending = 1;
+                T.tap_x = T.f[slot].ox, T.tap_y = T.f[slot].oy;
+                T.tap_at = SDL_GetTicks();
+            }
             T.f[slot].kind = F_NONE;
         }
         apply();
@@ -181,10 +189,33 @@ void touch_event(const SDL_Event *e) {
 /* Main thread, every pump (ios.c): lets go of a quick tap's A once it has been held long enough to be seen. */
 void touch_tick(void) {
     pthread_mutex_lock(&T.mx);
+    /* a tap nothing took (no mouse polled) confirms with A */
+    if (T.tap_pending && SDL_TICKS_PASSED(SDL_GetTicks(), T.tap_at + 150)) {
+        T.tap_pending = 0;
+        T.tap_release = SDL_GetTicks() + 90;
+        apply();
+    }
     if (T.tap_release && SDL_TICKS_PASSED(SDL_GetTicks(), T.tap_release)) {
         T.tap_release = 0;
         apply();
     }
+    pthread_mutex_unlock(&T.mx);
+}
+
+/* Game thread (the mouse's GetDeviceData): takes a pending tap, in pixels of the drawable. */
+int touch_take_tap(float *x, float *y, int *w, int *h) {
+    pthread_mutex_lock(&T.mx);
+    int got = T.tap_pending;
+    if (got) { *x = T.tap_x, *y = T.tap_y, *w = T.w, *h = T.h; T.tap_pending = 0; }
+    pthread_mutex_unlock(&T.mx);
+    return got;
+}
+
+/* Game thread: a tap the game had no cursor for confirms, as A. */
+void touch_press_a(void) {
+    pthread_mutex_lock(&T.mx);
+    T.tap_release = SDL_GetTicks() + 90;
+    apply();
     pthread_mutex_unlock(&T.mx);
 }
 

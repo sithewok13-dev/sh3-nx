@@ -2,6 +2,7 @@
  * gamepad the game reads must show the buttons, sticks and triggers they press; a second pad standing in for a
  * real controller must hide them. Writes OUT/touch.ppm, the overlay drawn over a grey frame with the left
  * stick and A held. Built with SH2_GLES and SH2_TOUCH (tests/run-touch-test.sh). */
+#include <math.h>
 #include "../src/runtime/rt.h"
 #include "../src/d3d8/gl.h"
 #include <SDL2/SDL.h>
@@ -119,12 +120,26 @@ int main(int argc, char **argv) {
     const uint8_t *a = px + 4 * ((H - 1 - (int)(fy + d)) * W + (int)fx);
     check("the A button is drawn, green while held", a[1] > a[0] + 30 && a[1] > a[2] + 30);
 
-    /* a quick tap off the controls confirms: A, let go a moment later (touch_tick); a drag does not */
+    /* a quick tap off the controls is the game's to take (a click where a menu shows its cursor: dinput.c) */
     finger(SDL_FINGERUP, 7, 0, 0);
     finger(SDL_FINGERUP, 5, 0, 0);
     finger(SDL_FINGERDOWN, 10, W * 0.62f, H * 0.4f);
     finger(SDL_FINGERUP, 10, W * 0.62f, H * 0.4f);
-    check("a quick tap presses A", SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
+    float tx, ty;
+    int tw, th;
+    check("a quick tap waits for the game", touch_take_tap(&tx, &ty, &tw, &th) && fabsf(tx - W * 0.62f) < 1 &&
+                                             fabsf(ty - H * 0.4f) < 1 && tw == W && th == H);
+    check("once", !touch_take_tap(&tx, &ty, &tw, &th));
+    touch_tick();
+    SDL_JoystickUpdate();
+    check("and a taken tap presses nothing", !SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
+    /* one the game does not take confirms: A, let go a moment later (touch_tick); a drag does not */
+    finger(SDL_FINGERDOWN, 10, W * 0.62f, H * 0.4f);
+    finger(SDL_FINGERUP, 10, W * 0.62f, H * 0.4f);
+    SDL_Delay(170);
+    touch_tick();
+    SDL_JoystickUpdate();
+    check("a tap nothing takes presses A", SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
     touch_tick();
     SDL_JoystickUpdate();
     check("and A is still held for a moment", SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_A));
