@@ -111,6 +111,7 @@ static struct {
     int runs;                       /* the stick is pushed onto the run marker */
     int run_marker;                 /* placed (there was room above the stick) */
     float run_x, run_y, run_deg;    /* where, and its direction from the stick (degrees, counter-clockwise) */
+    atomic_int world;               /* James is in the game (game_in_world): the top row's game buttons show */
     atomic_int light;               /* the flashlight: 0 not had yet, 1 off, 2 on (touch_draw reads the game) */
 } T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1};
 
@@ -175,6 +176,7 @@ static int shown(int b) {
     if (b == B_MENU) return 1;
     if (s == SCREEN_MENU) return 0;  /* the main menu, options, saves: nothing of play */
     if (b == B_CAMERA) return T.camera;
+    if (!atomic_load(&T.world)) return 0;  /* the title and its menus: nothing of play */
     if (b == B_LIGHT) return atomic_load(&T.light) != 0;  /* 0: James has no flashlight yet */
     if (b == B_MAP || b == B_ITEMS || b == B_CHEAT) return 1;
     return s == SCREEN_PLAY;  /* the cluster */
@@ -751,6 +753,7 @@ void touch_draw(void) {
     }
     atomic_store(&T.screen, game_screen());
     atomic_store(&T.light, game_flashlight_on());
+    atomic_store(&T.world, game_in_world());
     pthread_mutex_lock(&T.mx);
     if (!T.visible || !T.pw) { pthread_mutex_unlock(&T.mx); return; }
     int shot = T.shot, pw = T.pw, ph = T.ph;

@@ -30,6 +30,8 @@ static float pause_y;
 int game_pause_tap(float y480) { pause_y = y480; pause_taps++; return y480 >= 216 && y480 < 366; }
 static int light = 1;  /* the flashlight: had, off */
 int game_flashlight_on(void) { return light; }
+static int world = 1;
+int game_in_world(void) { return world; }
 
 enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK };
 enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS };
@@ -431,6 +433,13 @@ int main(int argc, char **argv) {
     finger(SDL_FINGERUP, 17, W * 0.5f, H * 0.1f);
     tick();
     check("and above the rows, nothing", !btn(SDL_CONTROLLER_BUTTON_A));
+    cursor = MENU;
+    world = 0;  /* the title's difficulty choice */
+    touch_draw();
+    press(17, B_MAP);
+    check("on the title, no MAP", !btn(SDL_CONTROLLER_BUTTON_Y));
+    finger(SDL_FINGERUP, 17, 0, 0);
+    world = 1;
     cursor = PLAY;
     touch_draw();
 

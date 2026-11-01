@@ -51,3 +51,6 @@ int game_frame_size(int *w, int *h) {
     *w = (int)MEM32(0x0072C780u), *h = (int)MEM32(0x0072C784u);
     return *w > 0 && *h > 0 && *w <= 8192 && *h <= 8192;
 }
+
+/* Heather is somewhere in the game (not the title or its menus): the top row's game buttons show. */
+int game_in_world(void) { return rt_game_loaded && MEM32(PLAYER_PTR) != 0; }
