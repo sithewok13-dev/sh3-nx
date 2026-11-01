@@ -176,10 +176,10 @@ static int shown(int b) {
     if (b == B_MENU) return 1;
     if (s == SCREEN_MENU) return 0;  /* the main menu, options, saves: nothing of play */
     if (b == B_CAMERA) return T.camera;
-    if (!atomic_load(&T.world)) return 0;  /* the title and its menus: nothing of play */
+    if (btn_cluster[b]) return s == SCREEN_PLAY;  /* the cluster: in play, whatever else */
+    if (!atomic_load(&T.world)) return 0;  /* the title and its menus: none of the game's buttons */
     if (b == B_LIGHT) return atomic_load(&T.light) != 0;  /* 0: James has no flashlight yet */
-    if (b == B_MAP || b == B_ITEMS || b == B_CHEAT) return 1;
-    return s == SCREEN_PLAY;  /* the cluster */
+    return 1;  /* MAP, ITEMS, CHEAT */
 }
 
 /* The nearest shown button within its radius and SLOP of (x, y), or -1. */

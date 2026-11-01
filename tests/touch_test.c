@@ -91,6 +91,7 @@ int main(int argc, char **argv) {
     SDL_GL_GetDrawableSize(rt_window, &W, &H);
 
     touch_init();
+    touch_draw();  /* (the overlay learns the game's state as it draws, each frame on the phone) */
     check("modern controls by default", classic == 0);
     check("the virtual pad is a game controller", SDL_NumJoysticks() == 1 && SDL_IsGameController(0) && touch_is_virtual_pad(0));
     c = SDL_GameControllerOpen(0);
