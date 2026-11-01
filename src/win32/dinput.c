@@ -14,8 +14,22 @@ static SDL_GameController *pad;
 
 static SDL_GameController *get_pad(void) {
     if (pad && !SDL_GameControllerGetAttached(pad)) { SDL_GameControllerClose(pad); pad = NULL; }
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    /* the touch controls' pad only while no real controller is attached; a real one replaces it */
+    static int pad_is_touch;
+    if (pad && pad_is_touch)
+        for (int i = 0; i < SDL_NumJoysticks(); i++)
+            if (SDL_IsGameController(i) && !touch_is_virtual_pad(i)) { SDL_GameControllerClose(pad); pad = NULL; break; }
+    for (int pass = 0; pass < 2 && !pad; pass++)
+        for (int i = 0; !pad && i < SDL_NumJoysticks(); i++)
+            if (SDL_IsGameController(i) && touch_is_virtual_pad(i) == pass) {
+                pad = SDL_GameControllerOpen(i);
+                pad_is_touch = pass;
+            }
+#else
     for (int i = 0; !pad && i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i)) pad = SDL_GameControllerOpen(i);
+#endif
     return pad;
 }
 

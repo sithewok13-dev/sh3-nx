@@ -56,6 +56,7 @@ void ios_require_file(const char *name) {
 /* Runs on the main thread, inside SDL_PumpEvents, before SDL queues the event. */
 static int SDLCALL app_events(void *unused, SDL_Event *e) {
     (void)unused;
+    touch_event(e);
     switch (e->type) {
     case SDL_APP_WILLENTERBACKGROUND:
         atomic_store(&background, 1);
@@ -93,6 +94,7 @@ void ios_main_start(void) {
     rt_window_open();
     gl_context_open();
     SDL_GL_MakeCurrent(rt_window, NULL);  /* the game thread makes it current (gl_context_open) */
+    touch_init();
     SDL_AddEventWatch(app_events, NULL);
     int w, h;
     SDL_GL_GetDrawableSize(rt_window, &w, &h);

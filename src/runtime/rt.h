@@ -94,6 +94,13 @@ _Noreturn void ios_main_loop(void);
 void ios_frame_gate(void);
 void ios_screen_size(int *w, int *h);
 #endif
+/* touch.c (iOS, or SH2_TOUCH with SH2_GLES to test elsewhere): on-screen controls as a virtual gamepad. */
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+void touch_init(void);                        /* main thread, once the window is open */
+void touch_event(const union SDL_Event *e);   /* main thread, every event */
+void touch_draw(void);                        /* game thread, over the presented frame */
+int touch_is_virtual_pad(int device_index);   /* dinput.c: a real controller wins over it */
+#endif
 void rt_window_open(void);
 
 /* kernel32.c */

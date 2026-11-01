@@ -95,6 +95,9 @@ static void present(const uint32_t *px, int w, int h) {
     float s = fminf((float)ww / w, (float)wh / h);
     int dw = w * s, dh = h * s, dx = (ww - dw) / 2, dy = (wh - dh) / 2;
     glBlitFramebuffer(0, 0, w, h, dx, dy + dh, dx + dw, dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    touch_draw();
+#endif
 #ifdef SH2_IOS
     ios_frame_gate();
 #endif

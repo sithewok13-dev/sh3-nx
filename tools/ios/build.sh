@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the iOS app from your own game: build/ios/SH3.ipa, unsigned, for SideStore, AltStore or Sideloadly.
 #
-#   1. Put your PC Silent Hill 3 install, with the Enhanced Edition packs, in game/ (see docs/IOS.md).
+#   1. Put your PC Silent Hill 3 install in game/ (see docs/IOS.md).
 #   2. tools/ios/build.sh
 #
 # Generates the game's C from game/sh3.exe the first time (tools/regen.sh, a few minutes), builds SDL2 for iOS the first time (tools/ios/build-deps.sh), then the app. Needs a Mac with Xcode, CMake,
@@ -12,6 +12,13 @@ cd "$ROOT"
 BUILD=$ROOT/build/ios
 
 [ -f game/sh3.exe ] || { echo "game/sh3.exe not found: copy or link your game folder to game/ (docs/IOS.md)"; exit 1; }
+# The port is made for one build of the exe.
+WANT=aa2aca6dba19bf510c9c2e92eefdc15e98266581
+HAVE=$(shasum -a 1 game/sh3.exe | cut -d' ' -f1)
+if [ "$HAVE" != "$WANT" ]; then
+    echo "game/sh3.exe is not the one this port is built for (SHA-1 $HAVE, want $WANT): see docs/IOS.md."
+    exit 1
+fi
 if [ ! -x .venv/bin/python3 ]; then
     python3 -m venv .venv
     .venv/bin/pip install -q -r requirements.txt

@@ -360,6 +360,9 @@ METHOD(dev_Present, 5) {
         if (f) { fprintf(f, "P6 %u %u 255\n", bb->w, bb->h); fwrite(px, 3, bb->w * bb->h, f); fclose(f); }
         free(px);
     }
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    touch_draw();      /* the on-screen controls, over the frame */
+#endif
 #ifdef SH2_IOS
     ios_frame_gate();  /* parks here while the app is in the background */
 #endif
