@@ -303,8 +303,6 @@ static void tap_to_game(float x, float y, int w, int h, int32_t *gx, int32_t *gy
     *gy = fy < 0 ? 0 : fy > 480 ? 480 : (int32_t)fy;
 }
 
-int game_cursor_shown(void) { return MEM8(MOUSE_ON) != 0; }
-
 static int mouse_events(uint32_t buf, uint32_t size, uint32_t cap) {
     static int step;  /* 1: press the button next, 2: release it next */
     uint32_t ev[3][2], n = 0;
@@ -312,7 +310,7 @@ static int mouse_events(uint32_t buf, uint32_t size, uint32_t cap) {
     int w, h;
     if (step == 1) { ev[n][0] = 12, ev[n][1] = 0x80; n++; step = 2; }
     else if (step == 2) { ev[n][0] = 12, ev[n][1] = 0; n++; step = 0; }
-    else if (touch_take_tap(&x, &y, &w, &h)) {
+    else if ((game_screen() == SCREEN_MENU || game_screen() == SCREEN_GAME_MENU) && touch_take_tap(&x, &y, &w, &h)) {
         if (MEM8(MOUSE_ON) && w > 0 && h > 0) {
             int32_t gx, gy;
             tap_to_game(x, y, w, h, &gx, &gy);

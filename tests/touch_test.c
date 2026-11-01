@@ -24,11 +24,14 @@ static int cheat, classic = -1, cursor;
 void cheat_set(int on) { cheat = on; }
 int cheat_get(void) { return cheat; }
 void controls_set_classic(int on) { classic = on; }
-int game_cursor_shown(void) { return cursor; }
+int game_screen(void) { return cursor; }  /* SCREEN_*: 0 play */
+static int pause_taps;
+static float pause_y;
+int game_pause_tap(float y480) { pause_y = y480; pause_taps++; return y480 >= 216 && y480 < 366; }
 static int light;
 int game_flashlight_on(void) { return light; }
 
-enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT };
+enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK };
 enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS };
 
 static int W = 1280, H = 590, failures;
@@ -333,21 +336,89 @@ int main(int argc, char **argv) {
     check("and CHEAT still works after", cheat == 1);
     SDL_DelEventWatch(watch, NULL);
 
-    /* in the game's menus (its cursor shown) only the top row is a control; a touch elsewhere is a click */
+    /* off play (game_screen) the cluster hides; each screen has its own controls */
     SDL_Delay(200);  /* the earlier taps' A, pressed and let go (the phone ticks all the time) */
     tick();
     SDL_Delay(120);
     tick();
-    cursor = 1;
+    enum { PLAY, CUTSCENE, PAUSE, MENU, GAME_MENU };
+    cursor = GAME_MENU;  /* the inventory */
     touch_draw();
     press(17, B_FIRE);
-    check("in a menu FIRE is not there", axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) == 0 && !btn(SDL_CONTROLLER_BUTTON_A));
-    finger(SDL_FINGERUP, 17, fx, fy);
-    check("and a touch there is a click", touch_take_tap(&tx, &ty, &tw, &th));
-    press(17, B_ITEMS);
-    check("ITEMS is still there", btn(SDL_CONTROLLER_BUTTON_START));
+    check("in the inventory, OK is where FIRE was (A, no aim)", btn(SDL_CONTROLLER_BUTTON_A) && axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) == 0);
     finger(SDL_FINGERUP, 17, 0, 0);
-    cursor = 0;
+    press(17, B_UP);
+    check("the arrows are the d-pad", btn(SDL_CONTROLLER_BUTTON_DPAD_UP) && !btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN));
+    finger(SDL_FINGERUP, 17, 0, 0);
+    press(17, B_BACK);
+    check("BACK is B", btn(SDL_CONTROLLER_BUTTON_B));
+    finger(SDL_FINGERUP, 17, 0, 0);
+    press(17, B_ITEMS);
+    check("ITEMS is still there (to close it)", btn(SDL_CONTROLLER_BUTTON_START));
+    finger(SDL_FINGERUP, 17, 0, 0);
+    finger(SDL_FINGERDOWN, 17, W * 0.5f, H * 0.5f);
+    finger(SDL_FINGERUP, 17, W * 0.5f, H * 0.5f);
+    check("a tap elsewhere is the mouse's to take", touch_take_tap(&tx, &ty, &tw, &th));
+    /* the labels are drawn even with a sampler object bound on unit 0, as the D3D8 layer keeps them (a mipmapped
+     * filter on the font's texture, which has no mipmaps, left every label blank on the phone) */
+    GLuint smp;
+    glGenSamplers(1, &smp);
+    glSamplerParameteri(smp, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glBindSampler(0, smp);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    touch_draw();
+    GLint smp_after = 0;
+    glGetIntegerv(GL_SAMPLER_BINDING, &smp_after);
+    float okx, oky;
+    at(B_OK, &okx, &oky);
+    uint8_t box[24 * 14 * 4];
+    glReadPixels((int)okx - 12, H - 1 - (int)oky - 7, 24, 14, GL_RGBA, GL_UNSIGNED_BYTE, box);
+    int lit = 0;
+    for (int i = 0; i < 24 * 14; i++) lit += box[4 * i] > 150;
+    check("the labels show with the game's sampler bound, and it is put back", lit > 10 && smp_after == (GLint)smp);
+    shot(out, "menu.ppm");
+    glBindSampler(0, 0);
+    glClearColor(0.25f, 0.27f, 0.3f, 1);
+    cursor = MENU;  /* the main menu, the difficulty choices */
+    touch_draw();
+    press(17, B_ITEMS);
+    check("in the main menu, no ITEMS", !btn(SDL_CONTROLLER_BUTTON_START));
+    finger(SDL_FINGERUP, 17, 0, 0);
+    touch_take_tap(&tx, &ty, &tw, &th);
+    press(17, B_DOWN);
+    check("but the arrows", btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN));
+    finger(SDL_FINGERUP, 17, 0, 0);
+    finger(SDL_FINGERDOWN, 17, W * 0.5f, H * 0.5f);
+    finger(SDL_FINGERUP, 17, W * 0.5f, H * 0.5f);
+    SDL_Delay(170);
+    tick();
+    check("a tap the mouse doesn't take is OK (A)", btn(SDL_CONTROLLER_BUTTON_A));
+    SDL_Delay(120);
+    tick();
+    cursor = CUTSCENE;
+    touch_draw();
+    press(17, B_FIRE);
+    finger(SDL_FINGERUP, 17, fx, fy);
+    check("in a cutscene nothing shows (no aim)", axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) == 0);
+    tick();
+    check("and a tap skips it (Back)", btn(SDL_CONTROLLER_BUTTON_BACK) && !touch_take_tap(&tx, &ty, &tw, &th));
+    SDL_Delay(140);
+    tick();
+    cursor = PAUSE;
+    touch_draw();
+    finger(SDL_FINGERDOWN, 17, W * 0.5f, H * (231.0f / 480));
+    finger(SDL_FINGERUP, 17, W * 0.5f, H * (231.0f / 480));
+    tick();
+    check("on the pause menu a tap picks the row under it and confirms", pause_taps == 1 && fabsf(pause_y - 231) < 1 &&
+                                                                         btn(SDL_CONTROLLER_BUTTON_A));
+    SDL_Delay(120);
+    tick();
+    finger(SDL_FINGERDOWN, 17, W * 0.5f, H * 0.1f);
+    finger(SDL_FINGERUP, 17, W * 0.5f, H * 0.1f);
+    tick();
+    check("and above the rows, nothing", !btn(SDL_CONTROLLER_BUTTON_A));
+    cursor = PLAY;
     touch_draw();
 
     /* a real controller (another pad) hides the controls and stops their input */

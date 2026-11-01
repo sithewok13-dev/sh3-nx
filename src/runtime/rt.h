@@ -109,7 +109,9 @@ int cheat_get(void);
 void cheat_tick(void);                        /* game thread, every presented frame */
 void controls_set_classic(int on);            /* game/controls.c: the original controls instead of modern */
 void controls_tick(void);                     /* game thread, every presented frame */
-int game_cursor_shown(void);                  /* dinput.c: the game shows its mouse cursor (a menu) */
+enum { SCREEN_PLAY, SCREEN_CUTSCENE, SCREEN_PAUSE, SCREEN_MENU, SCREEN_GAME_MENU, SCREEN_LOADING };
+int game_screen(void);                        /* game/controls.c: which screen the game is on (SCREEN_*) */
+int game_pause_tap(float y480);               /* a tap on the pause menu: its row picked (1) or nothing there (0) */
 int game_flashlight_on(void);                 /* game/controls.c: the flashlight is on */
 void touch_sound_cheat(int on);              /* touch_sound.c: CHEAT's sound */
 float *touch_sound_make(int on, int *n);     /* its samples (mono, 48 kHz floats; the caller frees them) */

@@ -9,14 +9,18 @@
  *
  *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone), and the Jedi Knight port's
  *                run marker (a double arrow) up to 100 pt above it: pushed 70 pt toward it, James runs
- *   elsewhere    a drag looks (the right stick: the search view); a quick tap is a mouse click where the game
- *                shows its cursor (dinput.c), else ACTION
+ *   elsewhere    a drag looks (the right stick: the search view); a quick tap is ACTION
  *   bottom right FIRE (aim and attack), AIM and ACTION round it; a drag on any of them looks too
  *   top left     MAP, ITEMS, the flashlight (its picture lit while the light is on)
  *                                      top right  MENU, the FPS readout left of it, CAMERA (when on) further left
  *   MENU         a tap pauses (or skips: the pad's Back); held 0.45 s, the tray opens under it:
  *                SENS, GYRO, OPACITY, FPS, CAMERA, CHEAT, CONTROLS, and the app's version below
- * While the game shows its mouse cursor (its menus), only the top row shows and a touch is a click. */
+ * Off play (game_screen, game/controls.c) the cluster and the stick hide:
+ *   cutscenes and movies   nothing shows; a tap skips (the pad's Back)
+ *   the pause menu         a tap on Resume, Save Game... picks it; the arrows, OK and BACK work it too
+ *   other menus            the arrows (the d-pad), OK (A) and BACK (B); a tap elsewhere is a mouse click where
+ *                          the game takes the mouse (dinput.c), else OK
+ *   the map, the items     the top row stays too (MAP and ITEMS close them) */
 #if defined(SH2_IOS) || defined(SH2_TOUCH)
 #include "rt.h"
 #include "../d3d8/gl.h"
@@ -58,10 +62,12 @@
 #define FPS_PERIOD   500
 
 /* the pad, numbered as SDL's buttons; the triggers are axes */
-enum { P_A, P_B, P_X, P_Y, P_BACK, P_START, P_RT, N_PAD };
-enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, N_BTN };
-static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA", ""};
-static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
+enum { P_A, P_B, P_X, P_Y, P_BACK, P_START, P_RT, P_UP, P_DOWN, P_LEFT, P_RIGHT, N_PAD };
+enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT,
+       B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK, N_BTN };
+static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA", "",
+                                             "", "", "", "", "OK", "BACK"};
+static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
 enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
 
 enum { GYRO_OFF, GYRO_TOUCH, GYRO_ALWAYS };
@@ -80,7 +86,7 @@ static struct {
     float w, h, k;                  /* the window in points, and pixels per point */
     int pw, ph;                     /* in pixels */
     int visible;                    /* no real controller attached */
-    atomic_int cursor;              /* the game shows its mouse cursor (its menus): set by touch_draw */
+    atomic_int screen;              /* which screen the game is on (SCREEN_*): set by touch_draw */
     struct {
         SDL_FingerID id;
         int kind, idx;              /* idx: the button or tray button */
@@ -148,6 +154,13 @@ static Circle button_at(int b) {
     case B_MENU: return (Circle){W - ix - TOP_R, top, TOP_R};
     case B_CHEAT: return (Circle){W - ix - TOP_R - 2 * TOP_R - 90.0f, top, TOP_R};
     case B_CAMERA: return (Circle){W - ix - TOP_R - 4 * TOP_R - 104.0f, top, TOP_R};
+    /* the menus' d-pad, left of OK (in FIRE's place) with BACK above it */
+    case B_OK: return (Circle){fx, fy, 36.0f};
+    case B_BACK: return (Circle){fx, fy - 92.0f, 28.0f};
+    case B_UP: return (Circle){fx - 150.0f, fy - 52.0f, 26.0f};
+    case B_DOWN: return (Circle){fx - 150.0f, fy + 8.0f, 26.0f};
+    case B_LEFT: return (Circle){fx - 205.0f, fy - 22.0f, 26.0f};
+    case B_RIGHT: return (Circle){fx - 95.0f, fy - 22.0f, 26.0f};
     }
     return (Circle){0, 0, 0};
 }
@@ -156,9 +169,14 @@ static Circle tray_at(int t) {
     return (Circle){m.x - (N_TRAY - 1 - t) * TRAY_STEP, m.y + TOP_R + 16.0f + TRAY_R, TRAY_R};
 }
 static int shown(int b) {
+    int s = atomic_load(&T.screen);
+    if (s == SCREEN_CUTSCENE || s == SCREEN_LOADING) return 0;  /* a tap there skips: nothing in the way */
+    if (b >= B_UP) return s == SCREEN_MENU || s == SCREEN_PAUSE || s == SCREEN_GAME_MENU;  /* the menus' d-pad */
+    if (b == B_MENU) return 1;
+    if (s == SCREEN_MENU) return 0;  /* the main menu, options, saves: nothing of play */
     if (b == B_CAMERA) return T.camera;
-    if (b == B_MAP || b == B_ITEMS || b == B_MENU || b == B_LIGHT || b == B_CHEAT) return 1;
-    return !atomic_load(&T.cursor);  /* the cluster: only in play */
+    if (b == B_MAP || b == B_ITEMS || b == B_LIGHT || b == B_CHEAT) return 1;
+    return s == SCREEN_PLAY;  /* the cluster */
 }
 
 /* The nearest shown button within its radius and SLOP of (x, y), or -1. */
@@ -265,6 +283,12 @@ static void apply(void) {
     if (held[B_MAP]) pad[P_Y] = 1;
     if (held[B_ITEMS]) pad[P_START] = 1;
     T.runs = runs;
+    if (held[B_OK]) pad[P_A] = 1;
+    if (held[B_BACK]) pad[P_B] = 1;
+    if (held[B_UP]) pad[P_UP] = 1;
+    if (held[B_DOWN]) pad[P_DOWN] = 1;
+    if (held[B_LEFT]) pad[P_LEFT] = 1;
+    if (held[B_RIGHT]) pad[P_RIGHT] = 1;
     if (T.a_release) pad[P_A] = 1;
     if (T.back_release) pad[P_BACK] = 1;
     memcpy(T.held, held, sizeof held);
@@ -273,6 +297,10 @@ static void apply(void) {
     set_button(SDL_CONTROLLER_BUTTON_X, pad[P_X]);
     set_button(SDL_CONTROLLER_BUTTON_Y, pad[P_Y]);
     set_button(SDL_CONTROLLER_BUTTON_BACK, pad[P_BACK]);
+    set_button(SDL_CONTROLLER_BUTTON_DPAD_UP, pad[P_UP]);
+    set_button(SDL_CONTROLLER_BUTTON_DPAD_DOWN, pad[P_DOWN]);
+    set_button(SDL_CONTROLLER_BUTTON_DPAD_LEFT, pad[P_LEFT]);
+    set_button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, pad[P_RIGHT]);
     set_button(SDL_CONTROLLER_BUTTON_START, pad[P_START]);
     /* a trigger rests at the axis's bottom: SDL maps -32768..32767 to 0..32767, so 0 would read as half pulled */
     SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, pad[P_RT] ? 32767 : -32768);
@@ -412,7 +440,7 @@ void touch_event(const SDL_Event *e) {
             } else if ((b = button_hit(x, y)) >= 0) {
                 kind = b == B_MENU ? F_MENU : F_BUTTON, idx = b;
                 if (b == B_CAMERA) T.shot = 1;
-            } else if (!atomic_load(&T.cursor)) {
+            } else if (atomic_load(&T.screen) == SCREEN_PLAY) {
                 kind = x < T.w * STICK_SIDE ? F_STICK : F_LOOK;
                 for (int i = 0; i < MAX_FINGERS; i++)  /* a second finger on the stick's side looks */
                     if (kind == F_STICK && T.f[i].kind == F_STICK) kind = F_LOOK;
@@ -458,10 +486,15 @@ void touch_tick(void) {
             T.f[i].kind = F_TRAY, T.f[i].idx = -1;  /* held: the tray, not the pause */
             changed = 1;
         }
-    if (T.tap_pending && SDL_TICKS_PASSED(now, T.tap_at + 150)) {  /* a tap nothing took confirms with A */
-        T.tap_pending = 0;
-        T.a_release = now + 90;
-        changed = 1;
+    if (T.tap_pending) {  /* a quick tap: what it does depends on the screen */
+        int scr = atomic_load(&T.screen), menu = scr == SCREEN_MENU || scr == SCREEN_GAME_MENU;
+        if (!menu || SDL_TICKS_PASSED(now, T.tap_at + 150)) {  /* (in a menu the mouse takes it first: dinput.c) */
+            T.tap_pending = 0;
+            changed = 1;
+            if (scr == SCREEN_CUTSCENE) T.back_release = now + 120;  /* skip it */
+            else if (scr == SCREEN_PAUSE) { if (T.ph && game_pause_tap(T.tap_y / T.ph * 480.0f)) T.a_release = now + 90; }
+            else if (scr != SCREEN_LOADING) T.a_release = now + 90;  /* ACTION in play; OK in a menu nothing took */
+        }
     }
     if (T.a_release && SDL_TICKS_PASSED(now, T.a_release)) T.a_release = 0, changed = 1;
     if (T.back_release && SDL_TICKS_PASSED(now, T.back_release)) T.back_release = 0, changed = 1;
@@ -537,23 +570,33 @@ static void draw_button(Circle c, const char *label, int held, int lit, float al
 
 /* LIGHT: a flashlight, its lens to the upper right; on, its beam is out and it is lit blue. */
 static void draw_flashlight(Circle c, int held, int on, float alpha) {
-    dl.alpha = alpha * (held ? 1.0f : IDLE_ALPHA);
-    touchUiDraw_Circle(&dl, c.x, c.y, c.r, on ? touchUi_Rgba(0.47f, 0.78f, 1.0f, 0.35f) : held ? touchUi_White(0.35f) : touchUi_Black(0.35f),
-                       2.0f, on ? blue : touchUi_White(0.85f));
-    touchUiColor ink = on ? touchUi_White(1.0f) : touchUi_White(0.9f);
+    /* no ring: the flashlight alone, larger; on, bright with its beam out, off, dim */
+    dl.alpha = alpha * (held || on ? 1.0f : IDLE_ALPHA);
+    touchUiColor ink = on ? touchUi_Rgba(1.0f, 0.97f, 0.85f, 1.0f) : touchUi_White(0.55f);
+    touchUiColor beam = touchUi_Rgba(1.0f, 0.93f, 0.6f, 0.95f);
     /* drawn pointing right, then turned 35 degrees up: the handle, the wider head, the lens */
-    float ca = cosf(-0.61f), sa = sinf(-0.61f);
-    #define P(px, py) c.x + (px) * ca - (py) * sa, c.y + (px) * sa + (py) * ca
+    float ca = cosf(-0.61f), sa = sinf(-0.61f), k = 1.45f, ox = c.x - 4.0f, oy = c.y + 3.0f;
+    #define P(px, py) ox + k * ((px) * ca - (py) * sa), oy + k * ((px) * sa + (py) * ca)
     float body[] = {P(-11, -2.6f), P(1, -2.6f), P(1, 2.6f), P(-11, 2.6f)};
     float head[] = {P(1, -2.6f), P(6, -5.5f), P(6, 5.5f), P(1, 2.6f)};
     touchUiDraw_Polygon(&dl, body, 4, ink);
     touchUiDraw_Polygon(&dl, head, 4, ink);
-    touchUiDraw_Line(&dl, P(7.2f, -5.5f), P(7.2f, 5.5f), 1.6f, on ? blue : touchUi_White(0.6f));
+    touchUiDraw_Line(&dl, P(7.2f, -5.5f), P(7.2f, 5.5f), 2.0f, on ? beam : touchUi_White(0.4f));
     if (on)  /* the beam */
-        for (int i = -1; i <= 1; i++) touchUiDraw_Line(&dl, P(10, i * 4.0f), P(15, i * 7.0f), 1.6f, blue);
+        for (int i = -1; i <= 1; i++) touchUiDraw_Line(&dl, P(10, i * 4.0f), P(16, i * 7.5f), 2.0f, beam);
     else     /* the switch */
-        touchUiDraw_Circle(&dl, P(-5, 0), 1.3f, touchUi_Black(0.8f), 0, touchUi_Clear());
+        touchUiDraw_Circle(&dl, P(-5, 0), 1.6f, touchUi_Black(0.8f), 0, touchUi_Clear());
     #undef P
+}
+
+/* The menus' arrows: a button with a triangle pointing its way. */
+static void draw_arrow(Circle c, int dir, int held, float alpha) {
+    draw_button(c, "", held, 0, alpha, 10);
+    static const float d[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+    float dx = d[dir][0], dy = d[dir][1], r = c.r * 0.42f;
+    float tri[] = {c.x + dx * r, c.y + dy * r, c.x - dx * r * 0.6f - dy * r, c.y - dy * r * 0.6f + dx * r,
+                   c.x - dx * r * 0.6f + dy * r, c.y - dy * r * 0.6f - dx * r};
+    touchUiDraw_Polygon(&dl, tri, 3, touchUi_White(0.95f));
 }
 
 /* CHEAT: Pyramid Head's helmet, seen from the front, an edge toward us: the great iron pyramid, its two faces
@@ -585,7 +628,7 @@ static void draw_pyramid(Circle c, int held, int on, float alpha) {
 static void build(Uint32 now) {
     touchUiDraw_Begin(&dl);
     float alpha = opacity_steps[T.opacity];
-    int cursor = atomic_load(&T.cursor);
+    int cursor = atomic_load(&T.screen) != SCREEN_PLAY;
     char label[64];
     for (int b = 0; b < N_BTN; b++) {
         if (!shown(b)) continue;
@@ -593,6 +636,7 @@ static void build(Uint32 now) {
         float size = c.r >= 40 ? 15.0f : c.r >= 28 ? (strlen(btn_label[b]) > 4 ? 10.0f : 11.5f) : 8.5f;
         if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light), alpha);
         else if (b == B_CHEAT) draw_pyramid(c, T.held[b], cheat_get(), alpha);
+        else if (b >= B_UP && b <= B_RIGHT) draw_arrow(c, b - B_UP, T.held[b], alpha);
         else draw_button(c, btn_label[b], T.held[b], 0, alpha, size);
     }
     /* MENU's and CHEAT's hold rings */
@@ -693,7 +737,7 @@ void touch_draw(void) {
         T.fps = frames * 1000.0f / (now - fps_at ? now - fps_at : 1);
         frames = 0, fps_at = now;
     }
-    atomic_store(&T.cursor, game_cursor_shown());
+    atomic_store(&T.screen, game_screen());
     atomic_store(&T.light, game_flashlight_on());
     pthread_mutex_lock(&T.mx);
     if (!T.visible || !T.pw) { pthread_mutex_unlock(&T.mx); return; }

@@ -437,7 +437,7 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
     if (!pList || pList->numItems <= 0 || pxW <= 0 || pxH <= 0) return;
 
     // The GL state this changes, to put back
-    GLint prog, vao, abuf, tex, activeTex, fb, readFb, vp[4], bsrc, bdst, bsrcA, bdstA, beq, beqA, unpack;
+    GLint prog, vao, abuf, tex, sampler, activeTex, fb, readFb, vp[4], bsrc, bdst, bsrcA, bdstA, beq, beqA, unpack;
     GLboolean bBlend, bDepth, bCull, bScissor, bStencil, cmask[4], dmask;
     glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
@@ -445,6 +445,7 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
     glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTex);
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
+    glGetIntegerv(GL_SAMPLER_BINDING, &sampler);  /* (sh2-nx: the D3D8 layer's sampler objects would override the font's filtering) */
     /* the draw and read framebuffers apart: the D3D8 layer keeps its frame bound for reading (sh2-nx) */
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFb);
@@ -483,6 +484,7 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
         glUniform2f(tr.uSize, (float)pxW, (float)pxH);
         glUniform1i(tr.uTex, 0);
         glBindTexture(GL_TEXTURE_2D, tr.tex);
+        glBindSampler(0, 0);
         glBindVertexArray(tr.vao);
         glBindBuffer(GL_ARRAY_BUFFER, tr.vbo);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(tr.numVtx * sizeof(trVtx)), tr.aVtx, GL_STREAM_DRAW);
@@ -494,6 +496,7 @@ void touchUiRender_Draw(const touchUiDrawList* pList, unsigned int fbo, int pxW,
     glBindBuffer(GL_ARRAY_BUFFER, (GLuint)abuf);
     glUseProgram((GLuint)prog);
     glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
+    glBindSampler(0, (GLuint)sampler);
     glActiveTexture((GLenum)activeTex);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)fb);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)readFb);
