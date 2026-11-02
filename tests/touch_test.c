@@ -140,9 +140,9 @@ int main(int argc, char **argv) {
     finger(SDL_FINGERMOTION, 5, sx + 39, sy);
     int part = axis(SDL_CONTROLLER_AXIS_LEFTX);
     check("past it, part way right", part > 13000 && part < 19000);
-    finger(SDL_FINGERMOTION, 5, sx + 200, sy);
-    check("a long push is full right", axis(SDL_CONTROLLER_AXIS_LEFTX) > 32000 && abs(axis(SDL_CONTROLLER_AXIS_LEFTY)) < 100);
-    check("pushed sideways, walking", !btn(SDL_CONTROLLER_BUTTON_X));
+    finger(SDL_FINGERMOTION, 5, sx + 62, sy);
+    check("pushed to the ring, full right", axis(SDL_CONTROLLER_AXIS_LEFTX) > 32000 && abs(axis(SDL_CONTROLLER_AXIS_LEFTY)) < 100);
+    check("on the ring, walking", !btn(SDL_CONTROLLER_BUTTON_X));
     float rx, ry;
     touch_running(&rx, &ry);
     check("the run marker sits up to 100 pt above the stick", fabsf(rx - sx) < 1 && sy - ry >= 76 && sy - ry <= 100);
@@ -158,8 +158,12 @@ int main(int argc, char **argv) {
     check("and back, still running", btn(SDL_CONTROLLER_BUTTON_X));
     finger(SDL_FINGERMOTION, 5, sx + 5, sy);
     check("back to the middle, the run ends", !btn(SDL_CONTROLLER_BUTTON_X));
-    finger(SDL_FINGERMOTION, 5, sx + 200, sy);
-    check("pushed sideways again, walking", !btn(SDL_CONTROLLER_BUTTON_X));
+    finger(SDL_FINGERMOTION, 5, sx + 55, sy);
+    check("pushed sideways inside the ring, walking", !btn(SDL_CONTROLLER_BUTTON_X));
+    finger(SDL_FINGERMOTION, 5, sx - 60, sy + 60);
+    check("pushed back past the ring, running (any direction)", btn(SDL_CONTROLLER_BUTTON_X));
+    finger(SDL_FINGERMOTION, 5, sx, sy);
+    finger(SDL_FINGERMOTION, 5, sx + 62, sy);
 
     /* look: a drag on the right, with the stick still held (two thumbs) */
     finger(SDL_FINGERDOWN, 6, W * 0.6f, H * 0.45f);

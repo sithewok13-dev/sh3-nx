@@ -8,8 +8,8 @@
  * Sizes are in points (the window's units on iOS), times in milliseconds.
  *
  *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone), and the Jedi Knight port's
- *                run marker (a double arrow) up to 100 pt above it: pushed 70 pt toward it, James runs, then
- *                runs whichever way the stick goes until the thumb lifts or comes back to the middle
+ *                run marker (a double arrow) up to 100 pt above it: pushed 70 pt any way (past the ring), James
+ *                runs, and keeps running whichever way the stick goes until the thumb lifts or comes back
  *   elsewhere    a drag looks (the right stick, with LT held: the search view); a quick tap is ACTION
  *   bottom right FIRE (aim and attack), AIM and ACTION round it; a drag on any of them looks too
  *   top left     MAP, ITEMS, the flashlight (its picture lit while the light is on)
@@ -264,9 +264,10 @@ static void apply(void) {
         case F_STICK:
             stick_tilt(dx, dy, STICK_R, STICK_DEAD, &tx, &ty);
             lx = tx, ly = ty;
-            /* run: hold X. Pushed onto the marker starts it; then James runs whichever way the stick points,
-             * until the thumb lifts or comes back to the middle */
-            if ((T.runs && hypotf(dx, dy) >= STICK_R * STICK_DEAD) || on_run_marker(T.f[i].x, T.f[i].y, T.f[i].ox, T.f[i].oy))
+            /* run: hold X. Pushed past the ring (RUN_ON) in any direction, or onto the marker, starts it; then
+             * James runs whichever way the stick points, until the thumb lifts or comes back to the middle */
+            if ((T.runs && hypotf(dx, dy) >= STICK_R * STICK_DEAD) || hypotf(dx, dy) >= RUN_ON ||
+                on_run_marker(T.f[i].x, T.f[i].y, T.f[i].ox, T.f[i].oy))
                 runs = 1, pad[P_X] = 1;
 
             break;
