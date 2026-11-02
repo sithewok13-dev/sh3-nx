@@ -599,30 +599,23 @@ static void draw_arrow(Circle c, int dir, int held, float alpha) {
     touchUiDraw_Polygon(&dl, tri, 3, touchUi_White(0.95f));
 }
 
-/* CHEAT: Pyramid Head's helmet, seen from the front, an edge toward us: the great iron pyramid, its two faces
- * (the right one in shadow), the edge down the middle, the rim jutting out over the shoulders. While on, lit
- * the red of rust and blood. */
-static void draw_pyramid(Circle c, int held, int on, float alpha) {
+/* CHEAT, drawn as the Halo of the Sun (the Order's seal in Silent Hill 3): a ring, a smaller one inside, and
+ * the little circles around it; red while the cheat is on. */
+static void draw_halo(Circle c, int held, int on, float alpha) {
     touchUiColor red = touchUi_Rgba(0.75f, 0.10f, 0.08f, 1.0f);
     dl.alpha = alpha * (held ? 1.0f : IDLE_ALPHA);
     touchUiDraw_Circle(&dl, c.x, c.y, c.r, on ? touchUi_Rgba(0.55f, 0.05f, 0.04f, 0.45f) : held ? touchUi_White(0.35f) : touchUi_Black(0.35f),
                        2.0f, on ? red : touchUi_White(0.85f));
-    float x = c.x, y = c.y;
-    touchUiColor lit = on ? touchUi_Rgba(0.95f, 0.85f, 0.8f, 1.0f) : touchUi_White(0.92f);
-    touchUiColor dark = on ? touchUi_Rgba(0.62f, 0.14f, 0.11f, 1.0f) : touchUi_White(0.55f);
-    touchUiColor body = on ? touchUi_Rgba(0.35f, 0.05f, 0.04f, 1.0f) : touchUi_White(0.35f);
-    /* the shoulders it sits on */
-    float shoulders[] = {x - 9, y + 6, x + 9, y + 6, x + 16, y + 15, x - 16, y + 15};
-    touchUiDraw_Polygon(&dl, shoulders, 4, body);
-    /* the helmet: wide and squat, its front edge a little left of the middle; the lit face, the shadowed one */
-    float left[] = {x + 1, y - 14, x - 15, y + 6, x - 2, y + 10};
-    float right[] = {x + 1, y - 14, x - 2, y + 10, x + 15, y + 5};
-    touchUiDraw_Polygon(&dl, left, 3, lit);
-    touchUiDraw_Polygon(&dl, right, 3, dark);
-    touchUiDraw_Line(&dl, x + 1, y - 13, x - 2, y + 9.5f, 1.0f, touchUi_Black(0.55f));
-    /* the iron's seams across the faces */
-    touchUiDraw_Line(&dl, x - 7, y - 2, x - 1, y + 0.5f, 0.8f, touchUi_Black(0.35f));
-    touchUiDraw_Line(&dl, x - 0.5f, y + 0.5f, x + 8, y - 2.5f, 0.8f, touchUi_Black(0.35f));
+    touchUiColor ink = on ? touchUi_Rgba(0.95f, 0.80f, 0.75f, 1.0f) : touchUi_White(0.92f);
+    touchUiColor none = touchUi_Rgba(0, 0, 0, 0);
+    float r = c.r * 0.52f;
+    touchUiDraw_Circle(&dl, c.x, c.y, r, none, 1.4f, ink);
+    touchUiDraw_Circle(&dl, c.x, c.y, r * 0.45f, none, 1.2f, ink);
+    for (int i = 0; i < 8; i++) {
+        float a = i * 0.7853982f;
+        touchUiDraw_Circle(&dl, c.x + cosf(a) * r * 1.28f, c.y + sinf(a) * r * 1.28f, r * 0.17f, ink, 0, ink);
+        touchUiDraw_Line(&dl, c.x + cosf(a) * r * 0.45f, c.y + sinf(a) * r * 0.45f, c.x + cosf(a) * r, c.y + sinf(a) * r, 0.9f, ink);
+    }
 }
 
 static void build(Uint32 now) {
@@ -635,7 +628,7 @@ static void build(Uint32 now) {
         Circle c = button_at(b);
         float size = c.r >= 40 ? 15.0f : c.r >= 28 ? (strlen(btn_label[b]) > 4 ? 10.0f : 11.5f) : 8.5f;
         if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light), alpha);
-        else if (b == B_CHEAT) draw_pyramid(c, T.held[b], cheat_get(), alpha);
+        else if (b == B_CHEAT) draw_halo(c, T.held[b], cheat_get(), alpha);
         else if (b >= B_UP && b <= B_RIGHT) draw_arrow(c, b - B_UP, T.held[b], alpha);
         else draw_button(c, btn_label[b], T.held[b], 0, alpha, size);
     }
