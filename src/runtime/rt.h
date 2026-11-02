@@ -119,6 +119,7 @@ void cheat_tick(void);                        /* game thread, every presented fr
 void controls_set_classic(int on);            /* game/controls.c: the original controls instead of modern */
 void controls_tick(void);                     /* game thread, every presented frame */
 enum { SCREEN_PLAY, SCREEN_CUTSCENE, SCREEN_PAUSE, SCREEN_MENU, SCREEN_GAME_MENU, SCREEN_LOADING };
+extern volatile int rt_game_loaded;          /* rt_core.c: sh3.exe is in guest memory (the launcher runs before) */
 int game_screen(void);                        /* game/controls.c: which screen the game is on (SCREEN_*) */
 int game_pause_tap(float y480);               /* a tap on the pause menu: its row picked (1) or nothing there (0) */
 int game_flashlight_on(void);                 /* game/controls.c: the flashlight is on */

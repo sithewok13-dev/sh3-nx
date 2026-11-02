@@ -25,7 +25,7 @@ void controls_set_classic(int on) {
 
 /* Game thread, once per presented frame (d3d8.c): holds the tray's choice, so the game's options can't undo it. */
 void controls_tick(void) {
-    if (!chosen || !MEM32(PLAYER_PTR)) return;
+    if (!chosen || !rt_game_loaded || !MEM32(PLAYER_PTR)) return;
     uint8_t want = classic ? 0 : 1;
     if (MEM8(CONTROL_TYPE) != want) MEM8(CONTROL_TYPE) = want;
 }
@@ -33,7 +33,9 @@ void controls_tick(void) {
 /* The flashlight's state is not known yet in SH3: LIGHT is drawn unlit (its button still toggles the light). */
 int game_flashlight_on(void) { return 0; }
 
+/* Before the game is loaded (the launcher draws the overlay too) none of its memory is there to read. */
 int game_screen(void) {
+    if (!rt_game_loaded) return SCREEN_MENU;
     if (MEM8(PAUSE_STATE)) return SCREEN_PAUSE;
     if (!MEM32(PLAYER_PTR)) return SCREEN_MENU;  /* the title, the main menu, options, loading a save */
     if (MEM8(RENDER_MODE) == 2) return SCREEN_CUTSCENE;
@@ -44,6 +46,7 @@ int game_screen(void) {
 int game_pause_tap(float y480) { (void)y480; return 0; }
 
 int game_frame_size(int *w, int *h) {
+    if (!rt_game_loaded) return 0;
     *w = (int)MEM32(0x0072C780u), *h = (int)MEM32(0x0072C784u);
     return *w > 0 && *h > 0 && *w <= 8192 && *h <= 8192;
 }
