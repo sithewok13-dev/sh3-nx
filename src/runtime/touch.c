@@ -15,7 +15,7 @@
  *   top left     MAP, ITEMS, the flashlight (its picture lit while the light is on)
  *                                      top right  MENU, the FPS readout left of it, CAMERA (when on) further left
  *   MENU         a tap pauses (or skips: the pad's Back); held 0.45 s, the tray opens under it:
- *                SENS, GYRO, OPACITY, FPS, CAMERA, CHEAT, CONTROLS, and the app's version below
+ *                SENS (the look speed), OPACITY, FPS, CAMERA, CHEAT, CONTROLS, and the app's version below
  * Off play (game_screen, game/controls.c) the cluster and the stick hide:
  *   cutscenes and movies   nothing shows; a tap skips (the pad's Back)
  *   the pause menu         a tap on Resume, Save Game... picks it; the arrows, OK and BACK work it too
@@ -64,10 +64,9 @@ enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHE
 static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA", "",
                                              "", "", "", "", "OK", "BACK"};
 static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
-enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
+enum { T_SENS, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
 
-enum { GYRO_OFF, GYRO_TOUCH, GYRO_ALWAYS };
-static const float sens_steps[] = {1.0f, 1.5f, 2.0f, 3.0f};
+static const float sens_steps[] = {0.5f, 0.75f, 1.0f};  /* SENS: the look stick's top speed */
 static const float opacity_steps[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f};
 
 #define MAX_FINGERS 10
@@ -98,11 +97,9 @@ static struct {
     float tap_x, tap_y;             /* where, in pixels */
     Uint32 tap_at;
     /* settings, kept in touch.cfg */
-    int gyro, sens, opacity, show_fps, camera, classic;
+    int sens, opacity, show_fps, camera, classic;
     int rate30, res, res_started;  /* RATE: 30 instead of 60; RES 0-2 (as the game started: it applies at launch) */
     int shot;                       /* CAMERA was tapped: touch_draw saves the frame */
-    SDL_Sensor *gyro_sensor;
-    float gyro_x, gyro_y;           /* the latest tilt, as right-stick tilt */
     float fps;
     int sound;                      /* CHEAT's sound to play once T.mx is let go: 1 off, 2 on (0 none) */
     int runs;                       /* the stick is pushed onto the run marker */
@@ -115,7 +112,7 @@ static struct {
 static void save_settings(void) {
     FILE *f = fopen("touch.cfg", "w");
     if (!f) return;
-    fprintf(f, "gyro=%d\nsens=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\nrate30=%d\nquality=%d\n", T.gyro, T.sens, T.opacity,
+    fprintf(f, "look=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\nrate30=%d\nquality=%d\n", T.sens, T.opacity,
             T.show_fps, T.camera, T.classic, T.rate30, T.res);
     fclose(f);
 }
@@ -124,8 +121,7 @@ static void load_settings(void) {
     char line[64];
     while (f && fgets(line, sizeof line, f)) {
         int v;
-        if (sscanf(line, "gyro=%d", &v) == 1 && v >= 0 && v <= 2) T.gyro = v;
-        else if (sscanf(line, "sens=%d", &v) == 1 && v >= 0 && v < 4) T.sens = v;
+        if (sscanf(line, "look=%d", &v) == 1 && v >= 0 && v < 3) T.sens = v;  /* (an older gyro sens= is ignored) */
         else if (sscanf(line, "opacity=%d", &v) == 1 && v >= 0 && v < 5) T.opacity = v;
         else if (sscanf(line, "fps=%d", &v) == 1) T.show_fps = !!v;
         else if (sscanf(line, "camera=%d", &v) == 1) T.camera = !!v;
@@ -239,11 +235,14 @@ static void apply(void) {
             }
 
             break;
-        case F_LOOK:
+        case F_LOOK: {
+            /* gentle near the middle (the tilt squared), up to SENS's top speed at the ring */
             stick_tilt(dx, dy, LOOK_R, 0.05f, &tx, &ty);
-            rx += tx, ry += ty;
+            float m = hypotf(tx, ty) * sens_steps[T.sens];
+            rx += tx * m, ry += ty * m;
             pad[P_LT] = 1;  /* the game moves the camera only in its search view, held on the pad's LT */
             break;
+        }
         case F_BUTTON:
             held[T.f[i].idx] = 1;
             if (btn_cluster[T.f[i].idx] && T.f[i].travel > DRAG_LOOK) {
@@ -254,7 +253,6 @@ static void apply(void) {
         case F_MENU: held[B_MENU] = !T.f[i].off; break;
         }
     }
-    if (T.gyro == GYRO_ALWAYS || (T.gyro == GYRO_TOUCH && thumb_down())) rx += T.gyro_x, ry += T.gyro_y;
     rx = rx > 1 ? 1 : rx < -1 ? -1 : rx;
     ry = ry > 1 ? 1 : ry < -1 ? -1 : ry;
     if (held[B_FIRE]) pad[P_RT] = pad[P_A] = 1;  /* FIRE: aim and attack */
@@ -338,9 +336,6 @@ void touch_init(void) {
     T.joy_id = SDL_JoystickInstanceID(T.joy);
     measure();
     count_pads();
-    if (SDL_InitSubSystem(SDL_INIT_SENSOR) == 0)
-        for (int i = 0; i < SDL_NumSensors() && !T.gyro_sensor; i++)
-            if (SDL_SensorGetDeviceType(i) == SDL_SENSOR_GYRO) T.gyro_sensor = SDL_SensorOpen(i);
     apply();  /* the triggers' resting value: a new virtual pad starts every axis at 0, half pulled for a trigger */
 }
 
@@ -367,8 +362,7 @@ static void play_sound(void) {  /* without T.mx */
 
 static void use_tray(int t) {
     switch (t) {
-    case T_SENS: T.sens = (T.sens + 1) % 4; break;
-    case T_GYRO: if (T.gyro_sensor) T.gyro = (T.gyro + 1) % 3; break;
+    case T_SENS: T.sens = (T.sens + 1) % 3; break;
     case T_OPACITY: T.opacity = (T.opacity + 1) % 5; break;
     case T_FPS: T.show_fps = !T.show_fps; T.tray = 0; break;
     case T_CAMERA: T.camera = !T.camera; T.tray = 0; break;
@@ -455,7 +449,7 @@ void touch_event(const SDL_Event *e) {
     play_sound();
 }
 
-/* Main thread, every pump (ios.c): MENU's hold, the presses a tap left held, and the gyro. */
+/* Main thread, every pump (ios.c): MENU's hold and the presses a tap left held. */
 void touch_tick(void) {
     pthread_mutex_lock(&T.mx);
     Uint32 now = SDL_GetTicks();
@@ -483,20 +477,6 @@ void touch_tick(void) {
     }
     if (T.a_release && SDL_TICKS_PASSED(now, T.a_release)) T.a_release = 0, changed = 1;
     if (T.back_release && SDL_TICKS_PASSED(now, T.back_release)) T.back_release = 0, changed = 1;
-    if (T.gyro_sensor) {
-        float g[3] = {0, 0, 0};  /* (SDL_PumpEvents reads the sensor: calling SDL_SensorUpdate here would post an
-                                    * event into touch_event while T.mx is held, and the main thread would hang) */
-        if (T.gyro != GYRO_OFF && !T.tray && !SDL_SensorGetData(T.gyro_sensor, g, 3)) {
-            /* landscape: turning the phone left or right is about its long axis, tipping it about its short one;
-             * radians a second, nothing under the dead zone, 1.5 rad/s for full tilt at SENS 1.5 */
-            int flip = SDL_GetDisplayOrientation(0) == SDL_ORIENTATION_LANDSCAPE_FLIPPED ? -1 : 1;
-            float yaw = -g[0] * flip, pitch = -g[1] * flip, s = sens_steps[T.sens] / 1.5f;
-            T.gyro_x = fabsf(yaw) < 0.026f ? 0 : yaw * s;
-            T.gyro_y = fabsf(pitch) < 0.026f ? 0 : pitch * s;
-        } else
-            T.gyro_x = T.gyro_y = 0;
-        changed = 1;
-    }
     if (changed) apply();
     pthread_mutex_unlock(&T.mx);
     play_sound();
@@ -674,7 +654,6 @@ static void build(Uint32 now) {
         touchUiDraw_Text(&dl, label, m.x - m.r - 34.0f, m.y, 11.0f, 1.0f, touchUi_White(0.85f));
     }
     if (T.tray) {
-        static const char *const gyro_names[] = {"OFF", "TOUCH", "ALWAYS"};
         dl.alpha = 1;
         Circle first = tray_at(0), last = tray_at(N_TRAY - 1);
         touchUiDraw_RRect(&dl, first.x - TRAY_R - 8, first.y - TRAY_R - 8, last.x - first.x + 2 * TRAY_R + 16, 2 * TRAY_R + 16,
@@ -682,11 +661,7 @@ static void build(Uint32 now) {
         for (int t = 0; t < N_TRAY; t++) {
             int lit = 0, dim = 0;
             switch (t) {
-            case T_SENS: snprintf(label, sizeof label, "SENS\n%.1fx", sens_steps[T.sens]); dim = T.gyro == GYRO_OFF; break;
-            case T_GYRO:
-                if (!T.gyro_sensor) snprintf(label, sizeof label, "NO\nGYRO"), dim = 1;
-                else snprintf(label, sizeof label, "GYRO\n%s", gyro_names[T.gyro]), lit = T.gyro != GYRO_OFF;
-                break;
+            case T_SENS: { static const char *const n[] = {"SLOW", "MED", "FAST"}; snprintf(label, sizeof label, "LOOK\n%s", n[T.sens]); break; }
             case T_OPACITY: snprintf(label, sizeof label, "OPAC\n%d%%", (int)(opacity_steps[T.opacity] * 100)); break;
             case T_FPS: snprintf(label, sizeof label, "FPS"); lit = T.show_fps; break;
             case T_CAMERA: snprintf(label, sizeof label, "CAM"); lit = T.camera; break;

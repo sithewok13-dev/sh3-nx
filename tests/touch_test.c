@@ -36,7 +36,7 @@ static int world = 1;
 int game_in_world(void) { return world; }
 
 enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK };
-enum { T_SENS, T_GYRO, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS };
+enum { T_SENS, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS };
 
 static int W = 1280, H = 590, failures;
 static SDL_GameController *c;
@@ -173,8 +173,13 @@ int main(int argc, char **argv) {
     touch_draw();
     check("the look stick shows where the thumb landed", pixel_differs(W * 0.6f + 59, H * 0.45f, (const uint8_t[3]){0, 0, 0}));
     glClearColor(0.25f, 0.27f, 0.3f, 1);
-    check("a drag up on the right looks up while the stick is held", axis(SDL_CONTROLLER_AXIS_RIGHTY) < -32000 &&
+    check("a drag up on the right looks up while the stick is held (LOOK MED: three quarters at the ring)",
+          axis(SDL_CONTROLLER_AXIS_RIGHTY) < -24000 && axis(SDL_CONTROLLER_AXIS_RIGHTY) > -25000 &&
                                                                           axis(SDL_CONTROLLER_AXIS_LEFTX) > 32000);
+    finger(SDL_FINGERMOTION, 6, W * 0.6f, H * 0.45f - 30);
+    int half = axis(SDL_CONTROLLER_AXIS_RIGHTY);
+    check("half way, gentler (a quarter or less)", half < -2000 && half > -8000);
+    finger(SDL_FINGERMOTION, 6, W * 0.6f, H * 0.45f - 100);
     check("and holds the search view (LT)", axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000);
     finger(SDL_FINGERUP, 6, 0, 0);
     check("lifted, the look stops", abs(axis(SDL_CONTROLLER_AXIS_RIGHTY)) < 100 && axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT) < 16000);
