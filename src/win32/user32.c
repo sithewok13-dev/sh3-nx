@@ -2,6 +2,7 @@
 #include "../runtime/rt.h"
 #include <SDL2/SDL.h>
 #include <ctype.h>
+#include <math.h>
 
 /* ---- printf family: format string and arguments live in guest memory ---- */
 
@@ -137,6 +138,9 @@ WINAPI(PostMessageA, "PostMessageA", 4) {
     memcpy(posted[n_posted++], (uint32_t[4]){ARG(0), ARG(1), ARG(2), ARG(3)}, 16);
     return 1;
 }
+static void PostMessageA_post(uint32_t msg, uint32_t w, uint32_t l) {
+    if (n_posted < 16) memcpy(posted[n_posted++], (uint32_t[4]){HWND_MAIN, msg, w, l}, 16);
+}
 static int next_message(uint32_t m, int remove) {
     rt_pump_events();
     if (!n_posted && !quit_posted) return 0;
@@ -266,7 +270,42 @@ WINAPI(ChangeDisplaySettingsA, "ChangeDisplaySettingsA", 2) { return 0; }
 WINAPI(SystemParametersInfoA, "SystemParametersInfoA", 4) { return 1; }
 WINAPI(ClientToScreen, "ClientToScreen", 2) { return 1; }
 WINAPI(ScreenToClient, "ScreenToClient", 2) { return 1; }
-WINAPI(GetCursorPos, "GetCursorPos", 1) { MEM32(ARG(0)) = 0; MEM32(ARG(0) + 4) = 0; return 1; }
+/* ---- taps as mouse clicks (touch.c) ----
+ * SH3's menus read the Windows cursor once a frame (sub_00600920): GetCursorPos, scaled from the game's frame
+ * size (game_frame_size) into their 512-wide space, then hit boxes (sub_00601970, sub_00600BF0); the left
+ * button comes as WM_LBUTTONDOWN / WM_LBUTTONUP to the window procedure. The cursor only counts once it has
+ * moved more than 4 pixels, so a tap on a menu puts it 8 pixels off the spot for one frame, then on it, then
+ * presses and releases the button over the next two frames. */
+static int32_t cursor_x, cursor_y;
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+static int32_t target_x, target_y;
+static int click_step;  /* 1: on the spot next, 2: button down next, 3: button up next */
+static void cursor_tick(void) {
+    float x, y;
+    int w, h, fw, fh;
+    switch (click_step) {
+    case 1: cursor_x = target_x, cursor_y = target_y; click_step = 2; return;
+    case 2: PostMessageA_post(0x201, 1, (uint32_t)(cursor_y << 16 | (cursor_x & 0xFFFF))); click_step = 3; return;
+    case 3: PostMessageA_post(0x202, 0, (uint32_t)(cursor_y << 16 | (cursor_x & 0xFFFF))); click_step = 0; return;
+    }
+    int scr = game_screen();
+    if (scr != SCREEN_MENU && scr != SCREEN_GAME_MENU && scr != SCREEN_PAUSE) return;
+    if (!game_frame_size(&fw, &fh) || !touch_take_tap(&x, &y, &w, &h) || w <= 0 || h <= 0) return;
+    float s = fminf((float)w / fw, (float)h / fh), dx = (w - fw * s) / 2, dy = (h - fh * s) / 2;
+    float gx = (x - dx) / s, gy = (y - dy) / s;
+    target_x = gx < 0 ? 0 : gx >= fw ? fw - 1 : (int32_t)gx;
+    target_y = gy < 0 ? 0 : gy >= fh ? fh - 1 : (int32_t)gy;
+    cursor_x = target_x + (target_x < 8 ? 8 : -8), cursor_y = target_y;
+    click_step = 1;
+}
+#endif
+WINAPI(GetCursorPos, "GetCursorPos", 1) {
+#if defined(SH2_IOS) || defined(SH2_TOUCH)
+    cursor_tick();
+#endif
+    MEM32(ARG(0)) = cursor_x; MEM32(ARG(0) + 4) = cursor_y;
+    return 1;
+}
 WINAPI(SetCursorPos, "SetCursorPos", 2) { return 1; }
 WINAPI(GetKeyState, "GetKeyState", 1) { return 0; }
 extern uint32_t rt_res_w, rt_res_h;

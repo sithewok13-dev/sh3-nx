@@ -122,6 +122,7 @@ enum { SCREEN_PLAY, SCREEN_CUTSCENE, SCREEN_PAUSE, SCREEN_MENU, SCREEN_GAME_MENU
 int game_screen(void);                        /* game/controls.c: which screen the game is on (SCREEN_*) */
 int game_pause_tap(float y480);               /* a tap on the pause menu: its row picked (1) or nothing there (0) */
 int game_flashlight_on(void);                 /* game/controls.c: the flashlight is on */
+int game_frame_size(int *w, int *h);          /* game/controls.c: the frame the cursor is measured in (0: none yet) */
 
 /* kernel32.c */
 void rt_thread_init_main(uint32_t stack_size);

@@ -487,8 +487,8 @@ void touch_tick(void) {
             changed = 1;
         }
     if (T.tap_pending) {  /* a quick tap: what it does depends on the screen */
-        int scr = atomic_load(&T.screen), menu = scr == SCREEN_MENU || scr == SCREEN_GAME_MENU;
-        if (!menu || SDL_TICKS_PASSED(now, T.tap_at + 150)) {  /* (in a menu the mouse takes it first: dinput.c) */
+        int scr = atomic_load(&T.screen), menu = scr == SCREEN_MENU || scr == SCREEN_GAME_MENU || scr == SCREEN_PAUSE;
+        if (!menu || SDL_TICKS_PASSED(now, T.tap_at + 150)) {  /* (in a menu the cursor takes it first: user32.c) */
             T.tap_pending = 0;
             changed = 1;
             if (scr == SCREEN_CUTSCENE) T.back_release = now + 120;  /* skip it */

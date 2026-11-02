@@ -409,9 +409,9 @@ int main(int argc, char **argv) {
     touch_draw();
     finger(SDL_FINGERDOWN, 17, W * 0.5f, H * (231.0f / 480));
     finger(SDL_FINGERUP, 17, W * 0.5f, H * (231.0f / 480));
+    check("on the pause menu a tap waits for the cursor (SH3's rows are hit boxes)", touch_take_tap(&tx, &ty, &tw, &th) &&
+                                                                         fabsf(ty - H * (231.0f / 480)) < 1 && !pause_taps);
     tick();
-    check("on the pause menu a tap picks the row under it and confirms", pause_taps == 1 && fabsf(pause_y - 231) < 1 &&
-                                                                         btn(SDL_CONTROLLER_BUTTON_A));
     SDL_Delay(120);
     tick();
     finger(SDL_FINGERDOWN, 17, W * 0.5f, H * 0.1f);
