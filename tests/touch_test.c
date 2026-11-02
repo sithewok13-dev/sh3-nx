@@ -144,12 +144,12 @@ int main(int argc, char **argv) {
     check("pushed to the ring, full right", axis(SDL_CONTROLLER_AXIS_LEFTX) > 32000 && abs(axis(SDL_CONTROLLER_AXIS_LEFTY)) < 100);
     check("on the ring, walking", !btn(SDL_CONTROLLER_BUTTON_X));
     float rx, ry;
-    touch_running(&rx, &ry);
-    check("the run marker sits up to 100 pt above the stick", fabsf(rx - sx) < 1 && sy - ry >= 76 && sy - ry <= 100);
+    check("walking, no run arrow", !touch_running(&rx, &ry));
     finger(SDL_FINGERMOTION, 5, sx, sy - 50);
     check("pushed forward 50 pt, walking", !btn(SDL_CONTROLLER_BUTTON_X) && axis(SDL_CONTROLLER_AXIS_LEFTY) < -20000);
-    finger(SDL_FINGERMOTION, 5, sx + 20, sy - 75);
-    check("pushed on toward the marker, running (X held)", btn(SDL_CONTROLLER_BUTTON_X) && touch_running(&rx, &ry));
+    finger(SDL_FINGERMOTION, 5, sx, sy - 75);
+    check("pushed past the ring, running (X held)", btn(SDL_CONTROLLER_BUTTON_X) && touch_running(&rx, &ry));
+    check("the run arrow sits just outside the ring, the way he runs", fabsf(rx - sx) < 2 && sy - ry > 80 && sy - ry < 130);
     finger(SDL_FINGERMOTION, 5, sx, sy - 65);
     check("eased back a little, still running", btn(SDL_CONTROLLER_BUTTON_X));
     finger(SDL_FINGERMOTION, 5, sx + 200, sy);
@@ -185,9 +185,9 @@ int main(int argc, char **argv) {
     check("a drag on FIRE looks too, and keeps firing", axis(SDL_CONTROLLER_AXIS_RIGHTX) < -20000 && btn(SDL_CONTROLLER_BUTTON_A));
     finger(SDL_FINGERMOTION, 7, fx, fy);
 
-    /* the picture: the stick pushed onto the run marker, FIRE held, the flashlight on */
+    /* the picture: the stick pushed past the ring up and right (running), FIRE held, the flashlight on */
     light = 2;
-    finger(SDL_FINGERMOTION, 5, sx, sy - 80);
+    finger(SDL_FINGERMOTION, 5, sx + 60, sy - 60);
     glClearColor(0.25f, 0.27f, 0.3f, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     GLint prog_before = 0;

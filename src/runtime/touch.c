@@ -7,9 +7,9 @@
  * (ios.c's event watch), the overlay is drawn on the game thread over each presented frame (touch_draw).
  * Sizes are in points (the window's units on iOS), times in milliseconds.
  *
- *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone), and the Jedi Knight port's
- *                run marker (a double arrow) up to 100 pt above it: pushed 70 pt any way (past the ring), James
- *                runs, and keeps running whichever way the stick goes until the thumb lifts or comes back
+ *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone):
+ *                pushed 70 pt any way (past the ring), James runs, and keeps running whichever way the stick goes
+ *                until the thumb lifts or comes back to the middle; a double arrow outside the ring shows it
  *   elsewhere    a drag looks (the right stick, with LT held: the search view); a quick tap is ACTION
  *   bottom right FIRE (aim and attack), AIM and ACTION round it; a drag on any of them looks too
  *   top left     MAP, ITEMS, the flashlight (its picture lit while the light is on)
@@ -43,13 +43,8 @@
 #define KNOB_R       24.0f
 #define STICK_DEAD   0.30f
 #define STICK_SIDE   0.42f  /* of the width */
-#define RUN_R        15.0f  /* the run marker (Jedi Knight's touchUi.c TU_RUN_*) */
-#define RUN_DIST     100.0f
-#define RUN_MIN_DIST 76.0f
-#define RUN_ON       70.0f  /* pushed this far toward it, running; under RUN_OFF, walking again */
-#define RUN_OFF      60.0f
-#define RUN_CONE     30.0f  /* degrees either side of the marker (RUN_CONE_OFF while running) */
-#define RUN_CONE_OFF 40.0f
+#define RUN_R        15.0f  /* the double arrow shown while running */
+#define RUN_ON       70.0f  /* pushed this far (past the ring) any way, running */
 #define LOOK_R       60.0f  /* a look drag this long is the right stick's full tilt */
 #define FIRE_R       42.0f
 #define ARC_DIST     115.0f
@@ -111,17 +106,16 @@ static struct {
     float fps;
     int sound;                      /* CHEAT's sound to play once T.mx is let go: 1 off, 2 on (0 none) */
     int runs;                       /* the stick is pushed onto the run marker */
-    int run_marker;                 /* placed (there was room above the stick) */
-    float run_x, run_y, run_deg;    /* where, and its direction from the stick (degrees, counter-clockwise) */
+    float run_x, run_y;             /* while running, the double arrow: just outside the ring, the way he runs */
     atomic_int world;               /* James is in the game (game_in_world): the top row's game buttons show */
     atomic_int light;               /* the flashlight: 0 not had yet, 1 off, 2 on (touch_draw reads the game) */
-} T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1};
+} T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1, .res = 1};
 
 /* ---- settings ---- */
 static void save_settings(void) {
     FILE *f = fopen("touch.cfg", "w");
     if (!f) return;
-    fprintf(f, "gyro=%d\nsens=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\nrate30=%d\nres=%d\n", T.gyro, T.sens, T.opacity,
+    fprintf(f, "gyro=%d\nsens=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\nrate30=%d\nquality=%d\n", T.gyro, T.sens, T.opacity,
             T.show_fps, T.camera, T.classic, T.rate30, T.res);
     fclose(f);
 }
@@ -137,7 +131,8 @@ static void load_settings(void) {
         else if (sscanf(line, "camera=%d", &v) == 1) T.camera = !!v;
         else if (sscanf(line, "classic=%d", &v) == 1) T.classic = !!v;
         else if (sscanf(line, "rate30=%d", &v) == 1) T.rate30 = !!v;
-        else if (sscanf(line, "res=%d", &v) == 1 && v >= 0 && v <= 2) T.res = v;
+        /* RES is stored as quality= (an older res= is ignored, so everyone starts on the cooler HIGH default) */
+        else if (sscanf(line, "quality=%d", &v) == 1 && v >= 0 && v <= 2) T.res = v;
     }
     if (f) fclose(f);
 }
@@ -206,35 +201,6 @@ static int tray_hit(float x, float y) {
     return -1;
 }
 
-/* ---- the run marker, as the Jedi Knight port places it (tu_PlaceRunMarker): straight above the stick, as far
- * as 100 pt (no nearer than 76) where it is clear of the top and of every button ---- */
-static void place_run_marker(float ox, float oy) {
-    T.run_marker = T.runs = 0;
-    float x = fmaxf(ox, inset_x() + 4 + RUN_R), min_y = 4 + RUN_R;
-    x = fminf(x, T.w - inset_x() - 4 - RUN_R);
-    for (float h = RUN_DIST; h >= RUN_MIN_DIST; h -= 2) {
-        float y = oy - h;
-        int clear = y >= min_y;
-        for (int b = 0; b < N_BTN && clear; b++) {
-            if (!shown(b)) continue;
-            Circle c = button_at(b);
-            clear = hypotf(x - c.x, y - c.y) >= c.r + RUN_R + 4;
-        }
-        if (!clear) continue;
-        T.run_marker = 1, T.run_x = x, T.run_y = y;
-        T.run_deg = atan2f(h, x - ox) * 57.29578f;
-        return;
-    }
-}
-/* Pushed far enough toward the marker, and within its cone (wider once running, so it doesn't flicker). */
-static int on_run_marker(float px, float py, float ox, float oy) {
-    if (!T.run_marker) return 0;
-    float dx = px - ox, dy = oy - py, d = hypotf(dx, dy);
-    if (d < (T.runs ? RUN_OFF : RUN_ON)) return 0;
-    float off = fabsf(fmodf(atan2f(dy, dx) * 57.29578f - T.run_deg + 540.0f, 360.0f) - 180.0f);
-    return off <= (T.runs ? RUN_CONE_OFF : RUN_CONE);
-}
-
 /* ---- the pad ---- */
 static void set_button(int sdl_button, int on) { SDL_JoystickSetVirtualButton(T.joy, sdl_button, on); }
 
@@ -264,11 +230,13 @@ static void apply(void) {
         case F_STICK:
             stick_tilt(dx, dy, STICK_R, STICK_DEAD, &tx, &ty);
             lx = tx, ly = ty;
-            /* run: hold X. Pushed past the ring (RUN_ON) in any direction, or onto the marker, starts it; then
-             * James runs whichever way the stick points, until the thumb lifts or comes back to the middle */
-            if ((T.runs && hypotf(dx, dy) >= STICK_R * STICK_DEAD) || hypotf(dx, dy) >= RUN_ON ||
-                on_run_marker(T.f[i].x, T.f[i].y, T.f[i].ox, T.f[i].oy))
+            /* run: hold X. Pushed past the ring (RUN_ON) in any direction starts it; then James runs whichever way
+             * the stick points, until the thumb lifts or comes back to the middle */
+            if ((T.runs && hypotf(dx, dy) >= STICK_R * STICK_DEAD) || hypotf(dx, dy) >= RUN_ON) {
+                float d = hypotf(dx, dy);
                 runs = 1, pad[P_X] = 1;
+                T.run_x = T.f[i].ox + dx / d * (STICK_R + KNOB_R + RUN_R + 4), T.run_y = T.f[i].oy + dy / d * (STICK_R + KNOB_R + RUN_R + 4);
+            }
 
             break;
         case F_LOOK:
@@ -461,7 +429,7 @@ void touch_event(const SDL_Event *e) {
                 kind = x < T.w * STICK_SIDE ? F_STICK : F_LOOK;
                 for (int i = 0; i < MAX_FINGERS; i++)  /* a second finger on the stick's side looks */
                     if (kind == F_STICK && T.f[i].kind == F_STICK) kind = F_LOOK;
-                if (kind == F_STICK) place_run_marker(x, y);
+                if (kind == F_STICK) T.runs = 0;
             }
             T.f[free_slot] = (typeof(T.f[0])){e->tfinger.fingerId, kind, idx, x, y, x, y, 0, SDL_GetTicks(), 0};
         } else if (slot >= 0 && e->type == SDL_FINGERMOTION) {
@@ -666,36 +634,27 @@ static void build(Uint32 now) {
             dl.alpha = 1;
             touchUiDraw_Arc(&dl, c.x, c.y, c.r + 4, 3.0f, 0, 6.2831853f * (p > 1 ? 1 : p), 1, blue);
         }
-    /* the stick and its run marker, where the thumb is */
+    /* the stick, where the thumb is */
     for (int i = 0; i < MAX_FINGERS && !cursor; i++) {
         if (T.f[i].kind != F_STICK) continue;
         float ox = T.f[i].ox, oy = T.f[i].oy, dx = T.f[i].x - ox, dy = T.f[i].y - oy, len = hypotf(dx, dy);
         if (len > STICK_R) dx *= STICK_R / len, dy *= STICK_R / len;
-        /* as the Jedi Knight port draws it (tu_DrawStick): the ring, a line to the marker, the knob on the marker
-         * while running, the marker's double arrow */
+        /* the ring and the knob under the thumb; while running, the ring lights and a double arrow sits just
+         * outside it, pointing the way James runs */
         int lit = T.runs;
         dl.alpha = alpha;
-        touchUiDraw_Circle(&dl, ox, oy, STICK_R, touchUi_White(0.08f), 1.5f, touchUi_White(0.45f));
-        if (T.run_marker) {
-            float mx = T.run_x - ox, my = T.run_y - oy, d = hypotf(mx, my);
-            if (d - RUN_R - STICK_R > 1) {
-                dl.alpha = (lit ? 1 : IDLE_ALPHA) * alpha;
-                touchUiDraw_Line(&dl, ox + mx / d * STICK_R, oy + my / d * STICK_R, ox + mx / d * (d - RUN_R),
-                                 oy + my / d * (d - RUN_R), 1.5f, lit ? blue : touchUi_White(0.45f));
-            }
-        }
-        dl.alpha = alpha;
-        touchUiDraw_Circle(&dl, lit ? T.run_x : ox + dx, lit ? T.run_y : oy + dy, KNOB_R, touchUi_White(0.30f), 1.5f,
-                           touchUi_White(0.45f));
-        if (T.run_marker) {
-            dl.alpha = (lit ? 1 : IDLE_ALPHA) * alpha;
-            touchUiDraw_Circle(&dl, T.run_x, T.run_y, RUN_R, lit ? touchUi_Rgba(0.47f, 0.78f, 1.0f, 0.55f) : touchUi_Black(0.35f),
-                               1.5f, touchUi_White(lit ? 0.85f : 0.45f));
-            touchUiColor cc = touchUi_White(lit ? 1.0f : 0.85f);
+        touchUiDraw_Circle(&dl, ox, oy, STICK_R, touchUi_White(0.08f), 1.5f, lit ? blue : touchUi_White(0.45f));
+        touchUiDraw_Circle(&dl, ox + dx, oy + dy, KNOB_R, touchUi_White(0.30f), 1.5f, touchUi_White(0.45f));
+        if (lit) {
+            float fx = T.run_x - ox, fy = T.run_y - oy, d = hypotf(fx, fy);
+            fx /= d, fy /= d;  /* forward, and (-fy, fx) across */
+            touchUiDraw_Circle(&dl, T.run_x, T.run_y, RUN_R, touchUi_Rgba(0.47f, 0.78f, 1.0f, 0.55f), 1.5f, touchUi_White(0.85f));
             for (int j = 0; j < 2; j++) {
-                float tip = -5.5f + 5.5f * j;
-                touchUiDraw_Line(&dl, T.run_x - 6, T.run_y + tip + 5, T.run_x, T.run_y + tip, 2.0f, cc);
-                touchUiDraw_Line(&dl, T.run_x, T.run_y + tip, T.run_x + 6, T.run_y + tip + 5, 2.0f, cc);
+                float tip = 5.5f - 5.5f * j;  /* along forward: the two chevrons' points */
+                float px = T.run_x + fx * tip, py = T.run_y + fy * tip;
+                float bx = px - fx * 5, by = py - fy * 5;
+                touchUiDraw_Line(&dl, bx - fy * 6, by + fx * 6, px, py, 2.0f, touchUi_White(1));
+                touchUiDraw_Line(&dl, px, py, bx + fy * 6, by - fx * 6, 2.0f, touchUi_White(1));
             }
         }
     }
