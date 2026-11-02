@@ -8,8 +8,9 @@
  * Sizes are in points (the window's units on iOS), times in milliseconds.
  *
  *   left 42%     the move stick, where the thumb lands (radius 60, 30% dead zone), and the Jedi Knight port's
- *                run marker (a double arrow) up to 100 pt above it: pushed 70 pt toward it, James runs
- *   elsewhere    a drag looks (the right stick: the search view); a quick tap is ACTION
+ *                run marker (a double arrow) up to 100 pt above it: pushed 70 pt toward it, James runs, then
+ *                runs whichever way the stick goes until the thumb lifts or comes back to the middle
+ *   elsewhere    a drag looks (the right stick, with LT held: the search view); a quick tap is ACTION
  *   bottom right FIRE (aim and attack), AIM and ACTION round it; a drag on any of them looks too
  *   top left     MAP, ITEMS, the flashlight (its picture lit while the light is on)
  *                                      top right  MENU, the FPS readout left of it, CAMERA (when on) further left
@@ -62,7 +63,7 @@
 #define FPS_PERIOD   500
 
 /* the pad, numbered as SDL's buttons; the triggers are axes */
-enum { P_A, P_B, P_X, P_Y, P_BACK, P_START, P_RT, P_UP, P_DOWN, P_LEFT, P_RIGHT, N_PAD };
+enum { P_A, P_B, P_X, P_Y, P_BACK, P_START, P_RT, P_LT, P_UP, P_DOWN, P_LEFT, P_RIGHT, N_PAD };
 enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT,
        B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK, N_BTN };
 static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP", "ITEMS", "MENU", "CAMERA", "",
@@ -263,11 +264,16 @@ static void apply(void) {
         case F_STICK:
             stick_tilt(dx, dy, STICK_R, STICK_DEAD, &tx, &ty);
             lx = tx, ly = ty;
-            if (on_run_marker(T.f[i].x, T.f[i].y, T.f[i].ox, T.f[i].oy)) runs = 1, pad[P_X] = 1;  /* run: hold X */
+            /* run: hold X. Pushed onto the marker starts it; then James runs whichever way the stick points,
+             * until the thumb lifts or comes back to the middle */
+            if ((T.runs && hypotf(dx, dy) >= STICK_R * STICK_DEAD) || on_run_marker(T.f[i].x, T.f[i].y, T.f[i].ox, T.f[i].oy))
+                runs = 1, pad[P_X] = 1;
+
             break;
         case F_LOOK:
             stick_tilt(dx, dy, LOOK_R, 0.05f, &tx, &ty);
             rx += tx, ry += ty;
+            pad[P_LT] = 1;  /* the game moves the camera only in its search view, held on the pad's LT */
             break;
         case F_BUTTON:
             held[T.f[i].idx] = 1;
@@ -310,7 +316,7 @@ static void apply(void) {
     set_button(SDL_CONTROLLER_BUTTON_START, pad[P_START]);
     /* a trigger rests at the axis's bottom: SDL maps -32768..32767 to 0..32767, so 0 would read as half pulled */
     SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, pad[P_RT] ? 32767 : -32768);
-    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_TRIGGERLEFT, -32768);
+    SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_TRIGGERLEFT, pad[P_LT] ? 32767 : -32768);
     SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_LEFTX, (Sint16)(lx * 32767));
     SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_LEFTY, (Sint16)(ly * 32767));
     SDL_JoystickSetVirtualAxis(T.joy, SDL_CONTROLLER_AXIS_RIGHTX, (Sint16)(rx * 32767));

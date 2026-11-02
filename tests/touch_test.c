@@ -153,7 +153,13 @@ int main(int argc, char **argv) {
     finger(SDL_FINGERMOTION, 5, sx, sy - 65);
     check("eased back a little, still running", btn(SDL_CONTROLLER_BUTTON_X));
     finger(SDL_FINGERMOTION, 5, sx + 200, sy);
-    check("off it, walking again", !btn(SDL_CONTROLLER_BUTTON_X));
+    check("then turned right, still running (any direction)", btn(SDL_CONTROLLER_BUTTON_X));
+    finger(SDL_FINGERMOTION, 5, sx - 30, sy + 50);
+    check("and back, still running", btn(SDL_CONTROLLER_BUTTON_X));
+    finger(SDL_FINGERMOTION, 5, sx + 5, sy);
+    check("back to the middle, the run ends", !btn(SDL_CONTROLLER_BUTTON_X));
+    finger(SDL_FINGERMOTION, 5, sx + 200, sy);
+    check("pushed sideways again, walking", !btn(SDL_CONTROLLER_BUTTON_X));
 
     /* look: a drag on the right, with the stick still held (two thumbs) */
     finger(SDL_FINGERDOWN, 6, W * 0.6f, H * 0.45f);
@@ -165,8 +171,9 @@ int main(int argc, char **argv) {
     glClearColor(0.25f, 0.27f, 0.3f, 1);
     check("a drag up on the right looks up while the stick is held", axis(SDL_CONTROLLER_AXIS_RIGHTY) < -32000 &&
                                                                           axis(SDL_CONTROLLER_AXIS_LEFTX) > 32000);
+    check("and holds the search view (LT)", axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000);
     finger(SDL_FINGERUP, 6, 0, 0);
-    check("lifted, the look stops", abs(axis(SDL_CONTROLLER_AXIS_RIGHTY)) < 100);
+    check("lifted, the look stops", abs(axis(SDL_CONTROLLER_AXIS_RIGHTY)) < 100 && axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT) < 16000);
     float fx, fy;
     at(B_FIRE, &fx, &fy);
     finger(SDL_FINGERDOWN, 7, fx, fy);
