@@ -35,6 +35,7 @@ typedef struct Res {
     GLuint buf;                  /* vertex and index buffers */
     int is_depth, is_rt;
     uint32_t pal_idx, pal_ver;   /* P8 textures: the palette their GL copy was expanded with */
+    uint32_t ver;                /* buffers: bumped by every Unlock (the camera's recorded frame keeps old contents) */
 } Res;
 
 Res *res_of(uint32_t obj);       /* NULL for a NULL object */
@@ -88,7 +89,17 @@ void res_snapshot_front(void);  /* keeps the presented frame for GetFrontBuffer 
 uint32_t res_read_front(uint32_t dst);
 void res_init_vtables(void);
 
+/* d3d8.c: the camera's frozen frame (runtime/camera.c). One frame's draws are recorded as the game makes them,
+ * then drawn again as often as wanted, the 3D ones from a moved camera: clip space times `clip` (D3D row-major). */
+void frame_rec_begin(void);       /* records the frame the game draws next */
+int frame_rec_ready(void);        /* a whole frame was recorded (the Present after frame_rec_begin) */
+void frame_rec_drop(void);
+void frame_replay(const float *clip);  /* clip: NULL draws it as it was */
+int frame_rec_camera(float view[16], float proj[16]);  /* the main 3D pass's view and projection (0: none) */
+void frame_show(void);            /* the back buffer to the screen, the overlay over it, swapped */
+
 /* d3d8_shader.c */
+void shader_set_freeze(const float *clip);  /* applies to the 3D draws that follow (NULL: off) */
 void shader_bind_for_draw(int pretransformed, uint32_t fvf, const int *attr_present);
 uint32_t shader_create_vs(uint32_t decl, uint32_t func);
 uint32_t shader_create_ps(uint32_t func);

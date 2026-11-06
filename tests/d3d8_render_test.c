@@ -25,6 +25,7 @@ STUB void ee_file_opened(const char *guest, FILE *f) { (void)guest; (void)f; }
 STUB uint32_t ee_rumble_gain(uint32_t magnitude) { return magnitude; }
 STUB void cheat_tick(void) {}
 STUB void controls_tick(void) {}
+STUB int game_player_head(float head[3], float facing[3]) { (void)head; (void)facing; return 0; }
 
 /* ---- calls into the layer ---- */
 static uint32_t call_bridge(const char *name, int n, const uint32_t *a) {
@@ -145,7 +146,7 @@ static void scene_formats(void) {  /* 1555, 4444, 565, DXT1, DXT5 side by side, 
 }
 
 static void ident(float *m) { memset(m, 0, 64); m[0] = m[5] = m[10] = m[15] = 1; }
-static void scene_3d(void) {  /* depth test, culling, vertex colors and DrawIndexedPrimitive with a base vertex */
+static void draw_3d(void) {  /* depth test, culling, vertex colors and DrawIndexedPrimitive with a base vertex */
     com(dev, Clear, 6, 0, 0, 1 | 2, 0xFF000000, u32f(1), 0);
     float m[16];
     ident(m);
@@ -191,8 +192,8 @@ static void scene_3d(void) {  /* depth test, culling, vertex colors and DrawInde
     com(dev, SetIndices, 2, ibo, 4);
     com(dev, DrawIndexedPrimitive, 5, 4, 0, 4, 0, 2);  /* TRIANGLELIST, min 0, 4 vertices, start 0, 2 triangles */
     rs(7, 0);
-    present();
 }
+static void scene_3d(void) { draw_3d(); present(); }
 
 static void scene_shaders(void) {  /* vs_1_1 with a D3DCOLOR input, ps_1_1 tex * diffuse */
     com(dev, Clear, 6, 0, 0, 1, 0xFF000000, u32f(1), 0);
@@ -246,6 +247,85 @@ static void readbacks(void) {
     com(rt, S_UnlockRect, 0);
 }
 
+/* ---- the camera's frozen frame (d3d8.c frame_rec_*, frame_replay) ----
+ * The 3D scene is recorded as it is drawn, then drawn again: as it was (the same pixels), and from a camera
+ * turned 25 degrees round the point 3 ahead (the triangles move across, the screen-space quad drawn after them
+ * stays put). Prints ok / FAIL lines; it writes no frames, so the GL / ES comparison is unchanged. */
+void frame_rec_begin(void);
+int frame_rec_ready(void);
+void frame_rec_drop(void);
+void frame_replay(const float *clip);
+int frame_rec_camera(float view[16], float proj[16]);
+static int fails;
+static void check(int ok, const char *what) { printf("  %s   freeze: %s\n", ok ? "ok" : "FAIL", what); fails += !ok; }
+static uint8_t *front(void) {
+    ((void (*)(void))SDL_GL_GetProcAddress("glFinish"))();
+    uint32_t pp = galloc(4), lr = galloc(8);
+    com(dev, CreateImageSurface, 4, W, H, 21, pp);
+    uint32_t img = MEM32(pp);
+    com(dev, GetFrontBuffer, 1, img);
+    com(img, S_LockRect, 3, lr, 0, 0);
+    uint8_t *px = malloc(W * H * 4);
+    memcpy(px, GPTR(MEM32(lr + 4)), W * H * 4);
+    com(img, S_UnlockRect, 0);
+    return px;
+}
+static void mul(float *r, const float *a, const float *b) {  /* row-major, row vectors: r = a b */
+    float t[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) t[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j] + a[i * 4 + 3] * b[12 + j];
+    memcpy(r, t, 64);
+}
+static void scene_freeze(void) {
+    uint32_t pp = galloc(4);
+    com(dev, 16, 3, 0, 0, pp);  /* GetBackBuffer: draw there again (readbacks left a render target bound) */
+    com(dev, SetRenderTarget, 2, MEM32(pp), 0);
+    frame_rec_begin();
+    draw_3d();
+    quad(10, 10, 40, 40, 0xFF0000FF);  /* screen space: the camera leaves it */
+    com(dev, Present, 4, 0, 0, 0, 0);
+    check(frame_rec_ready(), "the frame was recorded");
+    uint8_t *a = front();
+    float view[16], proj[16];
+    check(frame_rec_camera(view, proj), "the main pass's camera found");
+    com(dev, Clear, 6, 0, 0, 1 | 2, 0xFF404040, u32f(1), 0);  /* the game draws on meanwhile: replay ignores it */
+    frame_replay(NULL);
+    com(dev, Present, 4, 0, 0, 0, 0);
+    uint8_t *b = front();
+    int same = 0;
+    for (uint32_t i = 0; i < W * H * 4; i++) same += a[i] == b[i];
+    check(same == (int)(W * H * 4), "replayed as it was: every pixel the same");
+    /* view space turned 25 degrees round y through (0, 0, 3): clip' = clip P^-1 R P (row vectors) */
+    float c = cosf(0.436f), s = sinf(0.436f);
+    float tm[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -3, 1}, tp[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 3, 1};
+    float r[16] = {c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1};
+    /* P is the test's own: x 0.75, y 1, z 10/9, w = z; its inverse */
+    float zf = 10, zn = 1, q = zf / (zf - zn);
+    float pinv[16] = {1 / 0.75f, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1 / (-zn * q), 0, 0, 1, q / (zn * q)};
+    float m[16];
+    mul(m, pinv, tm); mul(m, m, r); mul(m, m, tp); mul(m, m, proj);
+    frame_replay(m);
+    com(dev, Present, 4, 0, 0, 0, 0);
+    uint8_t *d = front();
+    int moved = 0, quad_kept = 1;
+    for (uint32_t i = 0; i < W * H; i++) moved += a[4 * i + 1] != d[4 * i + 1];  /* green bytes */
+    for (int y = 12; y < 38; y++)
+        for (int x = 12; x < 38; x++) quad_kept &= d[4 * (y * W + x)] == 0xFF && d[4 * (y * W + x) + 2] == 0;
+    char what[96];
+    snprintf(what, sizeof what, "turned 25 degrees: the triangles moved (%d pixels changed)", moved);
+    check(moved > 500, what);
+    check(quad_kept, "turned: the screen-space quad stayed where it was");
+    frame_replay(NULL);
+    com(dev, Present, 4, 0, 0, 0, 0);
+    uint8_t *e = front();
+    same = 0;
+    for (uint32_t i = 0; i < W * H * 4; i++) same += a[i] == e[i];
+    check(same == (int)(W * H * 4), "turned back: every pixel as it was");
+    frame_rec_drop();
+    check(!frame_rec_ready(), "dropped");
+    free(a), free(b), free(d), free(e);
+}
+
 int main(int argc, char **argv) {
     out = argc > 1 ? argv[1] : ".";
     if (chdir(out)) rt_fatal("cannot enter %s", out);
@@ -263,6 +343,8 @@ int main(int argc, char **argv) {
     scene_3d();
     scene_shaders();
     readbacks();
+    scene_freeze();
+    if (fails) rt_fatal("freeze: %d checks failed", fails);
     puts("render test: done");
     return 0;
 }

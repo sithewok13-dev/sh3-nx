@@ -15,7 +15,14 @@
  *   top left     MAP, ITEMS, the flashlight (its picture lit while the light is on)
  *                                      top right  MENU, the FPS readout left of it, CAMERA (when on) further left
  *   MENU         a tap pauses (or skips: the pad's Back); held 0.45 s, the tray opens under it:
- *                SENS (the look speed), OPACITY, FPS, CAMERA, CHEAT, CONTROLS, and the app's version below
+ *                LOOK (the look speed), OPACITY, FPS, RATE, RES, CAM, CHEAT, CONTROLS, and the app's version below;
+ *                CAM held opens its options under it: PHOTO (GAME, BTNS or BOTH), SELFIE (1, 3 or 5), FREEZE
+ *   CAMERA       (shown once CAM is on, as the Jedi Knight port's camera; camera.c does the frozen ones)
+ *                tap: a photo (PHOTO: the game's picture, with the buttons, or one of each)
+ *                hold 0.5 s: a selfie (the game freezes, the camera swings round in front of Heather, flash)
+ *                slide down: freeze (drag to turn round, pinch to zoom, CAMERA for photos, MENU carries on)
+ *                slide up: a sweep, five photos as the camera moves round; sideways: a burst, a photo every
+ *                0.2 s while the finger stays down (up to 10). With FREEZE off, any slide is a burst
  * Off play (game_screen, game/controls.c) the cluster and the stick hide:
  *   cutscenes and movies   nothing shows; a tap skips (the pad's Back)
  *   the pause menu         a tap on Resume, Save Game... picks it; the arrows, OK and BACK work it too
@@ -65,12 +72,18 @@ static const char *const btn_label[N_BTN] = {"FIRE", "AIM", "ACTION", "", "MAP",
                                              "", "", "", "", "OK", "BACK"};
 static const int btn_cluster[N_BTN] = {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  /* in the right thumb's cluster: drags look */
 enum { T_SENS, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS, N_TRAY };
+enum { O_PHOTO, O_SELFIES, O_FREEZE, N_OPTS };  /* CAM's options, under the tray */
+static const int selfie_steps[] = {1, 3, 5};
+#define CAM_HOLD     500   /* CAMERA held this long: a selfie */
+#define CAM_SLIDE    24.0f /* slid this far: freeze, sweep or burst */
+#define BURST_MS     200
+#define BURST_MAX    10
 
 static const float sens_steps[] = {0.5f, 0.75f, 1.0f};  /* SENS: the look stick's top speed */
 static const float opacity_steps[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f};
 
 #define MAX_FINGERS 10
-enum { F_NONE, F_BUTTON, F_STICK, F_LOOK, F_MENU, F_TRAY, F_TAP };
+enum { F_NONE, F_BUTTON, F_STICK, F_LOOK, F_MENU, F_TRAY, F_TAP, F_ORBIT, F_FROZEN };  /* F_ORBIT: a freeze's drag */
 
 typedef struct { float x, y, r; } Circle;
 
@@ -99,21 +112,29 @@ static struct {
     /* settings, kept in touch.cfg */
     int sens, opacity, show_fps, camera, classic;
     int rate30, res, res_started;  /* RATE: 30 instead of 60; RES 0-2 (as the game started: it applies at launch) */
-    int shot;                       /* CAMERA was tapped: touch_draw saves the frame */
+    int shot;                       /* photos touch_draw takes of this frame: 1 the game's picture, 2 with the buttons */
+    int shot_flash;                 /* the game's one is a selfie's: lit up as by a flash */
+    int photo, selfies, freeze;     /* CAM's options: PHOTO (1 GAME, 2 BTNS, 3 BOTH), SELFIE (selfie_steps), FREEZE */
+    int camopts;                    /* CAM's options are open under the tray */
+    int burst, burst_n;             /* a burst: running while its finger is down, and how many so far */
+    Uint32 burst_next;
+    Uint32 flash_at, toast_at;      /* the last photo's white flash; its line ("Photo saved") */
+    int toast_n;                    /* photos the line counts */
+    int shutter;                    /* the shutter's sound to play once T.mx is let go */
     float fps;
     int sound;                      /* CHEAT's sound to play once T.mx is let go: 1 off, 2 on (0 none) */
     int runs;                       /* the stick is pushed onto the run marker */
     float run_x, run_y;             /* while running, the double arrow: just outside the ring, the way he runs */
     atomic_int world;               /* James is in the game (game_in_world): the top row's game buttons show */
     atomic_int light;               /* the flashlight: 0 not had yet, 1 off, 2 on (touch_draw reads the game) */
-} T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1, .res = 1};
+} T = {.mx = PTHREAD_MUTEX_INITIALIZER, .tap_a = 1, .sens = 1, .visible = 1, .res = 1, .photo = 1, .selfies = 1, .freeze = 1};
 
 /* ---- settings ---- */
 static void save_settings(void) {
     FILE *f = fopen("touch.cfg", "w");
     if (!f) return;
-    fprintf(f, "look=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\nrate30=%d\nquality=%d\n", T.sens, T.opacity,
-            T.show_fps, T.camera, T.classic, T.rate30, T.res);
+    fprintf(f, "look=%d\nopacity=%d\nfps=%d\ncamera=%d\nclassic=%d\nrate30=%d\nquality=%d\nphoto=%d\nselfies=%d\nfreeze=%d\n",
+            T.sens, T.opacity, T.show_fps, T.camera, T.classic, T.rate30, T.res, T.photo, T.selfies, T.freeze);
     fclose(f);
 }
 static void load_settings(void) {
@@ -129,6 +150,9 @@ static void load_settings(void) {
         else if (sscanf(line, "rate30=%d", &v) == 1) T.rate30 = !!v;
         /* RES is stored as quality= (an older res= is ignored, so everyone starts on the cooler HIGH default) */
         else if (sscanf(line, "quality=%d", &v) == 1 && v >= 0 && v <= 2) T.res = v;
+        else if (sscanf(line, "photo=%d", &v) == 1 && v >= 1 && v <= 3) T.photo = v;
+        else if (sscanf(line, "selfies=%d", &v) == 1 && v >= 0 && v <= 2) T.selfies = v;
+        else if (sscanf(line, "freeze=%d", &v) == 1) T.freeze = !!v;
     }
     if (f) fclose(f);
 }
@@ -164,7 +188,14 @@ static Circle tray_at(int t) {
     Circle m = button_at(B_MENU);
     return (Circle){m.x - (N_TRAY - 1 - t) * TRAY_STEP, m.y + TOP_R + 16.0f + TRAY_R, TRAY_R};
 }
+static Circle opt_at(int o) {  /* CAM's options, in a row under the tray, CAM's own in the middle */
+    Circle c = tray_at(T_CAMERA);
+    return (Circle){c.x + (o - 1) * (TRAY_STEP + 8), c.y + 2 * TRAY_R + 30.0f, TRAY_R + 2};
+}
 static int shown(int b) {
+    int cam = camera_state();
+    if (cam == CAM_FREEZE) return b == B_CAMERA || b == B_MENU;  /* frozen: photos, and MENU to carry on */
+    if (cam) return 0;  /* a selfie or a sweep: the picture only */
     int s = atomic_load(&T.screen);
     if (s == SCREEN_CUTSCENE || s == SCREEN_LOADING) return 0;  /* a tap there skips: nothing in the way */
     if (b >= B_UP) return s == SCREEN_MENU || s == SCREEN_PAUSE || s == SCREEN_GAME_MENU;  /* the menus' d-pad */
@@ -188,6 +219,13 @@ static int button_hit(float x, float y) {
         if (d < SLOP && d < bd) bd = d, best = b;
     }
     return best;
+}
+static int opt_hit(float x, float y) {
+    for (int o = 0; o < N_OPTS; o++) {
+        Circle c = opt_at(o);
+        if (hypotf(x - c.x, y - c.y) < c.r + SLOP) return o;
+    }
+    return -1;
 }
 static int tray_hit(float x, float y) {
     for (int t = 0; t < N_TRAY; t++) {
@@ -219,8 +257,8 @@ static void apply(void) {
     if (!T.joy) return;
     int pad[N_PAD] = {0}, held[N_BTN] = {0};
     float lx = 0, ly = 0, rx = 0, ry = 0;
-    int runs = 0;
-    for (int i = 0; i < MAX_FINGERS; i++) {
+    int runs = 0, cam = camera_state();
+    for (int i = 0; i < MAX_FINGERS && !cam; i++) {  /* the camera's freeze, selfies and sweeps: the pad rests */
         float dx = T.f[i].x - T.f[i].ox, dy = T.f[i].y - T.f[i].oy, tx, ty;
         switch (T.f[i].kind) {
         case F_STICK:
@@ -255,6 +293,8 @@ static void apply(void) {
     }
     rx = rx > 1 ? 1 : rx < -1 ? -1 : rx;
     ry = ry > 1 ? 1 : ry < -1 ? -1 : ry;
+    for (int i = 0; i < MAX_FINGERS && cam; i++)
+        if (T.f[i].kind == F_BUTTON || T.f[i].kind == F_MENU) held[T.f[i].kind == F_MENU ? B_MENU : T.f[i].idx] = 1;
     if (held[B_FIRE]) pad[P_RT] = pad[P_A] = 1;  /* FIRE: aim and attack */
     if (held[B_AIM]) pad[P_RT] = 1;
     if (held[B_ACTION]) pad[P_A] = 1;
@@ -271,6 +311,7 @@ static void apply(void) {
     if (T.a_release) pad[P_A] = 1;
     if (T.back_release) pad[P_BACK] = 1;
     memcpy(T.held, held, sizeof held);
+    if (cam) memset(pad, 0, sizeof pad), lx = ly = rx = ry = 0;
     set_button(SDL_CONTROLLER_BUTTON_A, pad[P_A]);
     set_button(SDL_CONTROLLER_BUTTON_B, pad[P_B]);
     set_button(SDL_CONTROLLER_BUTTON_X, pad[P_X]);
@@ -365,13 +406,28 @@ static void use_tray(int t) {
     case T_SENS: T.sens = (T.sens + 1) % 3; break;
     case T_OPACITY: T.opacity = (T.opacity + 1) % 5; break;
     case T_FPS: T.show_fps = !T.show_fps; T.tray = 0; break;
-    case T_CAMERA: T.camera = !T.camera; T.tray = 0; break;
+    case T_CAMERA: T.camera = !T.camera; T.tray = T.camopts = 0; break;  /* on letting go: held, it opens CAM's options */
     case T_CHEAT: toggle_cheat(); T.tray = 0; break;
     case T_CONTROLS: T.classic = !T.classic; controls_set_classic(T.classic); break;
-    case T_RATE: if (game_set_frame_rate(T.rate30 ? 60 : 30) > 0) T.rate30 = !T.rate30; break;  /* (SH3: 30 only, so far) */
+    case T_RATE: if (game_set_frame_rate(T.rate30 ? 60 : 30) > 0) T.rate30 = !T.rate30; break;
     case T_RES: T.res = (T.res + 1) % 3; break;  /* the game's size is set as it starts: from the next launch */
     }
     save_settings();
+}
+
+static void use_opt(int o) {
+    switch (o) {
+    case O_PHOTO: T.photo = T.photo % 3 + 1; break;
+    case O_SELFIES: T.selfies = (T.selfies + 1) % 3; break;
+    case O_FREEZE: T.freeze = !T.freeze; break;
+    }
+    save_settings();
+}
+
+/* CAMERA slid CAM_SLIDE: down freezes, up sweeps, sideways bursts (any way a burst, with FREEZE off). */
+static void camera_slide(float dx, float dy) {
+    if (T.freeze && fabsf(dy) > fabsf(dx)) camera_start(dy > 0 ? CAM_FREEZE : CAM_SWEEP, 5);
+    else T.burst = 1, T.burst_n = 0, T.burst_next = SDL_GetTicks();
 }
 
 /* A quick tap off the controls: the game takes it as a mouse click where a menu shows its cursor (dinput.c),
@@ -411,14 +467,24 @@ void touch_event(const SDL_Event *e) {
         }
         if (e->type == SDL_FINGERDOWN && slot < 0 && free_slot >= 0) {
             int kind = F_TAP, idx = 0, b;
-            if (T.tray) {  /* the tray's buttons; a touch anywhere else closes it, and does nothing more */
+            int cam = camera_state(), o;
+            if (cam && cam != CAM_FREEZE) {
+                kind = F_FROZEN;  /* a selfie or a sweep: nothing to touch */
+            } else if (cam == CAM_FREEZE) {  /* frozen: CAMERA takes a photo, MENU carries on, a drag turns round */
+                b = button_hit(x, y);
+                kind = F_FROZEN;
+                if (b == B_CAMERA) T.shot |= 1, kind = F_BUTTON, idx = b;
+                else if (b == B_MENU) camera_stop(), kind = F_BUTTON, idx = b;
+                else kind = F_ORBIT;
+            } else if (T.tray) {  /* the tray's buttons; a touch anywhere else closes it, and does nothing more */
                 int t = tray_hit(x, y);
                 kind = F_TRAY, idx = t;
-                if (t >= 0) use_tray(t);
-                else T.tray = 0;
+                if (T.camopts && (o = opt_hit(x, y)) >= 0) use_opt(o), idx = -1;
+                else if (t == T_CAMERA) ;  /* on letting go, unless held: CAM's options */
+                else if (t >= 0) use_tray(t);
+                else T.tray = T.camopts = 0;
             } else if ((b = button_hit(x, y)) >= 0) {
                 kind = b == B_MENU ? F_MENU : F_BUTTON, idx = b;
-                if (b == B_CAMERA) T.shot = 1;
             } else if (atomic_load(&T.screen) == SCREEN_PLAY) {
                 kind = x < T.w * STICK_SIDE ? F_STICK : F_LOOK;
                 for (int i = 0; i < MAX_FINGERS; i++)  /* a second finger on the stick's side looks */
@@ -427,9 +493,23 @@ void touch_event(const SDL_Event *e) {
             }
             T.f[free_slot] = (typeof(T.f[0])){e->tfinger.fingerId, kind, idx, x, y, x, y, 0, SDL_GetTicks(), 0};
         } else if (slot >= 0 && e->type == SDL_FINGERMOTION) {
-            float d = hypotf(x - T.f[slot].ox, y - T.f[slot].oy);
+            float d = hypotf(x - T.f[slot].ox, y - T.f[slot].oy), px = T.f[slot].x, py = T.f[slot].y;
             if (d > T.f[slot].travel) T.f[slot].travel = d;
+            if (T.f[slot].kind == F_ORBIT) {  /* one finger turns the camera round; two pinch to zoom */
+                int other = -1;
+                for (int i = 0; i < MAX_FINGERS; i++) if (i != slot && T.f[i].kind == F_ORBIT) other = i;
+                if (other < 0) camera_orbit(x - px, y - py, T.w);
+                else {
+                    float before = hypotf(px - T.f[other].x, py - T.f[other].y), now = hypotf(x - T.f[other].x, y - T.f[other].y);
+                    if (before > 1 && now > 1) camera_zoom(now / before);
+                }
+            }
             T.f[slot].x = x, T.f[slot].y = y;
+            if (T.f[slot].kind == F_BUTTON && T.f[slot].idx == B_CAMERA && !T.f[slot].off && !camera_state() &&
+                d > CAM_SLIDE) {
+                camera_slide(x - T.f[slot].ox, y - T.f[slot].oy);
+                T.f[slot].off = 1;  /* once a touch */
+            }
             if (T.f[slot].kind == F_MENU || (T.f[slot].kind == F_BUTTON && T.f[slot].idx == B_CHEAT)) {
                 Circle c = button_at(T.f[slot].idx);
                 if (hypotf(x - c.x, y - c.y) > c.r + SLOP * 2) T.f[slot].off = 1;  /* slid off: neither tap nor tray */
@@ -437,6 +517,11 @@ void touch_event(const SDL_Event *e) {
         } else if (slot >= 0 && e->type == SDL_FINGERUP) {
             int quick = SDL_GetTicks() - T.f[slot].t0 < TAP_MS && T.f[slot].travel < 0.04f * T.h + SLOP;
             if (T.f[slot].kind == F_MENU && !T.f[slot].off) T.back_release = SDL_GetTicks() + 120;  /* a tap: pause */
+            if (T.f[slot].kind == F_BUTTON && T.f[slot].idx == B_CAMERA) {
+                if (!T.f[slot].off && !camera_state()) T.shot |= T.photo;  /* a tap: PHOTO's photos */
+                T.burst = 0;
+            }
+            if (T.f[slot].kind == F_TRAY && T.f[slot].idx == T_CAMERA && !T.f[slot].off) use_tray(T_CAMERA);
             if (quick && (T.f[slot].kind == F_LOOK || T.f[slot].kind == F_STICK || T.f[slot].kind == F_TAP))
                 tap(T.f[slot].ox, T.f[slot].oy);
             T.f[slot].kind = F_NONE;
@@ -459,6 +544,16 @@ void touch_tick(void) {
             toggle_cheat();
             T.f[i].off = 1;  /* once a hold */
         }
+    for (int i = 0; i < MAX_FINGERS; i++) {
+        if (T.f[i].kind == F_BUTTON && T.f[i].idx == B_CAMERA && !T.f[i].off && !camera_state() &&
+            now - T.f[i].t0 >= CAM_HOLD) {  /* held still: a selfie */
+            camera_start(CAM_SELFIE, selfie_steps[T.selfies]);
+            T.f[i].off = 1;
+            changed = 1;
+        }
+        if (T.f[i].kind == F_TRAY && T.f[i].idx == T_CAMERA && !T.f[i].off && now - T.f[i].t0 >= MENU_HOLD)
+            T.camopts = 1, T.f[i].off = 1;  /* CAM held: its options */
+    }
     for (int i = 0; i < MAX_FINGERS; i++)
         if (T.f[i].kind == F_MENU && !T.f[i].off && now - T.f[i].t0 >= MENU_HOLD) {
             T.tray = 1;
@@ -592,6 +687,17 @@ static void draw_halo(Circle c, int held, int on, float alpha) {
     }
 }
 
+/* CAMERA: a camera, its lens in the middle and the flash up in its corner; lit blue while bursting. */
+static void draw_camera(Circle c, int held, int lit, float alpha) {
+    draw_button(c, "", held, lit, alpha, 8);
+    touchUiColor ink = lit ? blue : touchUi_White(0.95f), none = touchUi_Rgba(0, 0, 0, 0);
+    float w = c.r * 1.05f, h = c.r * 0.7f, x = c.x - w / 2, y = c.y - h / 2 + 1.5f;
+    touchUiDraw_RRect(&dl, x + w * 0.2f, y - 3.5f, w * 0.3f, 4.5f, 1.2f, ink, 0, touchUi_Clear());  /* the viewfinder */
+    touchUiDraw_RRect(&dl, x, y, w, h, 3.0f, none, 1.6f, ink);
+    touchUiDraw_Circle(&dl, c.x, y + h / 2, h * 0.32f, none, 1.6f, ink);
+    touchUiDraw_Circle(&dl, x + w - 4.0f, y + 3.5f, 1.3f, ink, 0, ink);
+}
+
 static void build(Uint32 now) {
     touchUiDraw_Begin(&dl);
     float alpha = opacity_steps[T.opacity];
@@ -603,8 +709,42 @@ static void build(Uint32 now) {
         float size = c.r >= 40 ? 15.0f : c.r >= 28 ? (strlen(btn_label[b]) > 4 ? 10.0f : 11.5f) : 8.5f;
         if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light) == 2, alpha);
         else if (b == B_CHEAT) draw_halo(c, T.held[b], cheat_get(), alpha);
+        else if (b == B_CAMERA) draw_camera(c, T.held[b], T.burst, camera_state() == CAM_FREEZE ? 1.0f : alpha);
         else if (b >= B_UP && b <= B_RIGHT) draw_arrow(c, b - B_UP, T.held[b], alpha);
         else draw_button(c, btn_label[b], T.held[b], 0, alpha, size);
+    }
+    /* CAMERA's hold ring (a selfie), and how many a burst has taken */
+    for (int i = 0; i < MAX_FINGERS; i++)
+        if (T.f[i].kind == F_BUTTON && T.f[i].idx == B_CAMERA && !T.f[i].off && !camera_state() && now - T.f[i].t0 > 120) {
+            Circle c = button_at(B_CAMERA);
+            float p = (float)(now - T.f[i].t0) / CAM_HOLD;
+            dl.alpha = 1;
+            touchUiDraw_Arc(&dl, c.x, c.y, c.r + 4, 3.0f, 0, 6.2831853f * (p > 1 ? 1 : p), 1, blue);
+        }
+    if (T.burst && T.burst_n) {
+        Circle c = button_at(B_CAMERA);
+        snprintf(label, sizeof label, "%d", T.burst_n);
+        dl.alpha = 1;
+        touchUiDraw_Text(&dl, label, c.x - c.r - 14.0f, c.y, 13.0f, 1.0f, blue);
+    }
+    /* frozen: how it works, along the bottom */
+    if (camera_state() == CAM_FREEZE) {
+        dl.alpha = 1;
+        touchUiDraw_RRect(&dl, T.w / 2 - 230, T.h - 40, 460, 26, 13, touchUi_Black(0.5f), 0, touchUi_Clear());
+        touchUiDraw_Text(&dl, "FROZEN  -  drag to move round  -  pinch to zoom  -  CAMERA: photo  -  MENU: carry on",
+                         T.w / 2, T.h - 27, 9.0f, 1.0f, touchUi_White(0.9f));
+    }
+    /* the last photo: a white flash, then a line saying it's saved */
+    if (T.flash_at && now - T.flash_at < 250) {
+        dl.alpha = 0.7f * (1 - (now - T.flash_at) / 250.0f);
+        touchUiDraw_RRect(&dl, 0, 0, T.w, T.h, 0, touchUi_White(1), 0, touchUi_Clear());
+    }
+    if (T.toast_at && now - T.toast_at < 1500 && !(camera_state() && camera_state() != CAM_FREEZE)) {
+        Circle c = button_at(B_MENU);
+        if (T.toast_n == 1) snprintf(label, sizeof label, "Photo saved");
+        else snprintf(label, sizeof label, "%d photos saved", T.toast_n);
+        dl.alpha = 1;
+        touchUiDraw_Text(&dl, label, c.x - 150.0f, c.y + c.r + 22.0f, 10.0f, 1.0f, touchUi_White(0.9f));
     }
     /* MENU's and CHEAT's hold rings */
     for (int i = 0; i < MAX_FINGERS; i++)
@@ -680,6 +820,19 @@ static void build(Uint32 now) {
             }
             draw_button(tray_at(t), label, 0, lit, dim ? 0.5f : 1.0f, 6.5f);
         }
+        if (T.camopts) {
+            Circle a = opt_at(0), z = opt_at(N_OPTS - 1);
+            dl.alpha = 1;
+            touchUiDraw_RRect(&dl, a.x - a.r - 8, a.y - a.r - 8, z.x - a.x + 2 * a.r + 16, 2 * a.r + 16, a.r + 8,
+                              touchUi_Black(0.6f), 0, touchUi_Clear());
+            static const char *const photo[] = {"", "GAME", "BTNS", "BOTH"};
+            for (int o = 0; o < N_OPTS; o++) {
+                if (o == O_PHOTO) snprintf(label, sizeof label, "PHOTO\n%s", photo[T.photo]);
+                else if (o == O_SELFIES) snprintf(label, sizeof label, "SELFIE\n%d", selfie_steps[T.selfies]);
+                else snprintf(label, sizeof label, "FREEZE\n%s", T.freeze ? "ON" : "OFF");
+                draw_button(opt_at(o), label, 0, o == O_FREEZE && T.freeze, 1.0f, 6.5f);
+            }
+        }
         dl.alpha = 1;
         touchUiDraw_Text(&dl, T.res != T.res_started ? "v" SH2_VERSION_LABEL "  -  port by cutarev  -  RES: restart the app to apply"
                                                      : "v" SH2_VERSION_LABEL "  -  port by cutarev",
@@ -689,7 +842,7 @@ static void build(Uint32 now) {
 
 #ifndef SH2_IOS
 /* Elsewhere (the tests), CAMERA's photos are PPM files in the game folder; iOS saves them to Photos. */
-void touch_save_photo(const unsigned char *rgba, int w, int h) {
+__attribute__((weak)) void touch_save_photo(const unsigned char *rgba, int w, int h) {
     static int n;
     char path[64];
     snprintf(path, sizeof path, "photo-%d.ppm", n++);
@@ -700,6 +853,15 @@ void touch_save_photo(const unsigned char *rgba, int w, int h) {
     fclose(f);
 }
 #endif
+
+/* A selfie's flash: the dark lifted most, the light hardly (Silent Hill is dark: a camera's flash at arm's length
+ * lights up the faces and leaves the far fog). */
+static void lift(unsigned char *px, int n) {
+    static unsigned char curve[256];
+    if (!curve[255])
+        for (int i = 0; i < 256; i++) curve[i] = (unsigned char)(255.0f * powf(i / 255.0f, 0.62f) + 0.5f);
+    for (int i = 0; i < n; i++) px[4 * i] = curve[px[4 * i]], px[4 * i + 1] = curve[px[4 * i + 1]], px[4 * i + 2] = curve[px[4 * i + 2]];
+}
 
 /* Game thread, over each presented frame: the overlay, and CAMERA's photos. */
 void touch_draw(void) {
@@ -715,21 +877,42 @@ void touch_draw(void) {
     atomic_store(&T.light, game_flashlight_on());
     atomic_store(&T.world, game_in_world());
     pthread_mutex_lock(&T.mx);
-    if (!T.visible || !T.pw) { pthread_mutex_unlock(&T.mx); return; }
-    int shot = T.shot, pw = T.pw, ph = T.ph;
+    if (!T.visible || !T.pw) { T.shot = 0; pthread_mutex_unlock(&T.mx); return; }
+    /* a burst's next photo, while its finger stays down (always the game's picture) */
+    if (T.burst && T.burst_n < BURST_MAX && SDL_TICKS_PASSED(now, T.burst_next))
+        T.shot |= 1, T.burst_n++, T.burst_next = now + BURST_MS;
+    int shot = T.shot, flash = T.shot_flash, pw = T.pw, ph = T.ph;
     float k = T.k;
-    T.shot = 0;
-    build(now);
+    T.shot = T.shot_flash = 0;
+    if (shot) {
+        int n = (shot & 1) + (shot >> 1 & 1);
+        T.toast_n = T.toast_at && now - T.toast_at < 1500 ? T.toast_n + n : n;
+        T.toast_at = now;
+    }
     pthread_mutex_unlock(&T.mx);
     GLuint fbo = gl_screen_fbo();
-    if (shot) {  /* CAMERA: the frame as the game drew it, then with the buttons */
+    if (shot & 1) {  /* CAMERA: the frame as the game drew it (a selfie's lit up as by a flash) */
         unsigned char *px = touchUiRender_ReadRGBA(fbo, pw, ph);
+        if (px && flash) lift(px, pw * ph);
         if (px) touch_save_photo(px, pw, ph), free(px);
     }
+    if (shot) touch_sound_shutter();
+    pthread_mutex_lock(&T.mx);
+    if (shot && (flash || !camera_state())) T.flash_at = now;  /* (a sweep's photos go by without one) */
+    build(now);
+    pthread_mutex_unlock(&T.mx);
     touchUiRender_Draw(&dl, fbo, pw, ph, k);
-    if (shot) {
+    if (shot & 2) {  /* then as it shows, with the buttons */
         unsigned char *px = touchUiRender_ReadRGBA(fbo, pw, ph);
         if (px) touch_save_photo(px, pw, ph), free(px);
     }
+}
+
+/* camera.c, game thread, before it shows a frozen frame: a clean photo of it. */
+void touch_take_photo(int flash) {
+    pthread_mutex_lock(&T.mx);
+    T.shot |= 1;
+    T.shot_flash = flash;
+    pthread_mutex_unlock(&T.mx);
 }
 #endif

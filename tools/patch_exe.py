@@ -32,6 +32,9 @@ PATCHES = [
     (0x5F1D15, bytes.fromhex('d959e8d9c0'), call(0x5F1D15, CAVE_HEALTH), 'health indicator position'),
     (0x5E82FD, b'\x6a\x00', b'\x6a\x01', 'pause menu box: alpha blending on'),
     (0x5E8390, p32(0xFF000000), p32(0x00000000), 'pause menu box: fully transparent'),
+    # SilentHill3.FusionFix (System.ixx): the frame pacing (sub_0041B2C0) counted a frame late and kept falling
+    # back from 60 to 30 frames a second; inc edx instead of dec edx holds it steady
+    (0x41B5D1, b'\x4a\x03\xc8\xa3', b'\x42\x03\xc8\xa3', 'frame pacing: a steady 60'),
 ]
 
 

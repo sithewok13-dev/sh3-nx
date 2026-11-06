@@ -110,7 +110,20 @@ float *touch_sound_make(int on, int *n);     /* its samples (mono, 48 kHz floats
 int touch_running(float *x, float *y);       /* tests: the stick is on the run marker (and where it is) */
 void touch_save_photo(const unsigned char *rgba, int w, int h);  /* CAMERA: top row first; ios_photos.m */
 void touch_control_center(int b, float *x, float *y);           /* tests: a control's center in pixels */
+void touch_take_photo(int flash);            /* camera.c, game thread: a clean photo of this frame (flash: lit up) */
+void touch_sound_shutter(void);              /* touch_sound.c: CAMERA's shutter */
 #endif
+
+/* camera.c: CAMERA's freeze, selfies and sweeps. The game thread is held inside its Present while they run. */
+enum { CAM_FREEZE = 1, CAM_SELFIE, CAM_SWEEP };
+void camera_after_present(void);              /* game thread, after every Present (d3d8.c) */
+void camera_start(int what, int shots);       /* main thread (touch.c): CAM_*, and a selfie's photos */
+void camera_stop(void);                       /* ends a freeze */
+int camera_state(void);                       /* 0, or the CAM_* asked for or running */
+void camera_orbit(float dx, float dy, float w);  /* a freeze's drag, in points, across a screen w wide */
+void camera_zoom(float factor);              /* a freeze's pinch: >1 the fingers moved apart */
+void dsound_pause(int on);                    /* dsound.c: the game's sound held (the camera's freeze) */
+int game_player_head(float head[3], float facing[3]);  /* game/controls.c: Heather's head and facing (world) */
 
 /* the game's side of the touch controls, on every platform (d3d8.c calls the ticks each frame) */
 void cheat_set(int on);                       /* game/cheat.c: everything (health, guns, ammo, items) */

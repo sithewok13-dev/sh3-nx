@@ -453,3 +453,8 @@ WINAPI(DirectSoundCreate8, "DSOUND#11", 3) {
     MEM32(ARG(1)) = ds_obj;
     return 0;
 }
+
+/* The camera's freeze (runtime/camera.c): the game's sound stops where it is and carries on from there. */
+void dsound_pause(int on) {
+    if (audio) SDL_PauseAudioDevice(audio, on);
+}

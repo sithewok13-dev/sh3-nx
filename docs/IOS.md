@@ -50,6 +50,16 @@ Generated game code and the `.ipa` contain code derived from the game: keep them
 - **Touch controls**: a stick that appears wherever your left thumb lands, A/B/X/Y on the right (Xbox
   colors), dragging elsewhere on the right half for the right stick, L1/L2 and R1/R2 in the top corners, Back
   and Start at the top.
+- **The tray** (hold MENU): LOOK (look speed), OPAC, FPS, RATE (60 frames a second, or 30 for a cooler phone),
+  RES, CAM, CHEAT (Heather can't die; also the Halo of the Sun button up top, held), CTRL (modern or classic).
+- **Camera** (turn CAM on in the tray; hold CAM for its options PHOTO, SELFIE and FREEZE), as in the Jedi Knight port:
+  - tap: a photo, into the Photos app (PHOTO: the game's picture, with the buttons, or both)
+  - hold half a second: a selfie. The game freezes, the camera swings round in front of Heather, and 1, 3 or 5
+    photos are taken with a flash; then the game carries on, changed in nothing
+  - slide down: freeze. Drag to move round the frozen moment, pinch to zoom, CAMERA for photos, MENU to carry on
+  - slide up: a sweep, five photos as the camera moves round; sideways: a burst, a photo every 0.2 s (up to 10)
+  The frozen camera redraws the last frame from a new angle: what the game's camera never showed (the back of a
+  wall, behind Heather) can be missing.
 - **Controllers**: Xbox, PlayStation and MFi controllers; pair them in Settings > Bluetooth. While one is
   connected the touch controls hide, and they come back when it disconnects. There are no touch controls yet.
 - **Resolution**: *Full screen* (the default) matches the phone's shape, up to 1920 pixels wide, and is scaled

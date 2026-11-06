@@ -635,7 +635,7 @@ METHOD(b_Lock, 5) {
     MEM32(ARG(3)) = b->mem + (ARG(1) < b->size ? ARG(1) : 0);
     return 0;
 }
-METHOD(b_Unlock, 1) { RES->dirty = 1; return 0; }
+METHOD(b_Unlock, 1) { RES->dirty = 1; RES->ver++; return 0; }
 METHOD(vb_GetDesc, 2) {
     Res *b = RES;
     uint32_t v[6] = {FMT_VERTEXDATA, 6, b->usage, b->pool, b->size, b->fmt};

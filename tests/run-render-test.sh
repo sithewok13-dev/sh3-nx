@@ -8,7 +8,7 @@ OUT=${1:-$ROOT/build/render-test}
 CC=${CC:-cc}
 SRC="$ROOT/src/runtime/rt_core.c $ROOT/src/runtime/host.c $ROOT/src/win32/kernel32.c $ROOT/src/win32/user32.c
      $ROOT/src/win32/dinput.c $ROOT/src/win32/dsound.c
-     $ROOT/src/d3d8/d3d8.c $ROOT/src/d3d8/d3d8_res.c $ROOT/src/d3d8/d3d8_shader.c $ROOT/src/d3d8/gl.c
+     $ROOT/src/runtime/camera.c $ROOT/src/d3d8/d3d8.c $ROOT/src/d3d8/d3d8_res.c $ROOT/src/d3d8/d3d8_shader.c $ROOT/src/d3d8/gl.c
      $ROOT/tests/d3d8_render_test.c"
 CFLAGS="-std=gnu17 -O1 -g -fwrapv -fno-strict-aliasing -w -I$ROOT/third_party/xboxrecomp/templates/runtime"
 LIBS="$(pkg-config --cflags --libs sdl2 libavformat libavcodec libswscale libswresample libavutil) -lm -lpthread"

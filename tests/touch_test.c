@@ -34,6 +34,16 @@ static int light = 1;  /* the flashlight: had, off */
 int game_flashlight_on(void) { return light; }
 static int world = 1;
 int game_in_world(void) { return world; }
+/* the camera (camera.c), faked: what the controls asked of it */
+static int cam_state, cam_started, cam_shots, cam_stops;
+static float cam_dx, cam_zoom = 1;
+void camera_start(int what, int shots) { cam_state = cam_started = what, cam_shots = shots; }
+void camera_stop(void) { cam_state = 0, cam_stops++; }
+int camera_state(void) { return cam_state; }
+void camera_orbit(float dx, float dy, float w) { (void)dy, (void)w; cam_dx += dx; }
+void camera_zoom(float f) { cam_zoom *= f; }
+static int photos;
+void touch_save_photo(const unsigned char *rgba, int w, int h) { (void)rgba, (void)w, (void)h; photos++; }
 
 enum { B_FIRE, B_AIM, B_ACTION, B_LIGHT, B_MAP, B_ITEMS, B_MENU, B_CAMERA, B_CHEAT, B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK };
 enum { T_SENS, T_OPACITY, T_FPS, T_RATE, T_RES, T_CAMERA, T_CHEAT, T_CONTROLS };
@@ -488,6 +498,84 @@ int main(int argc, char **argv) {
     press(8, B_AIM);
     check("with a controller attached, touches press nothing", axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) == 0);
     check("and the other pad is not ours", !touch_is_virtual_pad(real));
+    /* (back to no controller) */
+    SDL_Event gone;
+    SDL_zero(gone);
+    gone.type = SDL_CONTROLLERDEVICEREMOVED;
+    SDL_JoystickDetachVirtual(real);
+    touch_event(&gone);
+    finger(SDL_FINGERUP, 8, 0, 0);
+
+    /* CAMERA, as the Jedi Knight port's: on from the tray, then a tap, a hold, slides */
+    float x, y;
+    press(20, B_MENU);
+    SDL_Delay(480); tick();
+    finger(SDL_FINGERUP, 20, 0, 0);
+    at(-T_CAMERA - 1, &x, &y);
+    finger(SDL_FINGERDOWN, 21, x, y);
+    finger(SDL_FINGERUP, 21, x, y);
+    touch_draw();
+    at(B_CAMERA, &x, &y);
+    int before = photos;
+    finger(SDL_FINGERDOWN, 22, x, y);
+    finger(SDL_FINGERUP, 22, x, y);
+    touch_draw();
+    check("CAMERA: a tap takes a photo (PHOTO: the game's picture)", photos == before + 1);
+    finger(SDL_FINGERDOWN, 23, x, y);
+    SDL_Delay(520); tick();
+    check("CAMERA: held, a selfie of 3", cam_started == 2 && cam_shots == 3);  /* CAM_SELFIE */
+    finger(SDL_FINGERUP, 23, x, y);
+    cam_state = 0;
+    finger(SDL_FINGERDOWN, 24, x, y);
+    finger(SDL_FINGERMOTION, 24, x, y + 40);
+    check("CAMERA: slid down, the freeze", cam_state == 1);
+    finger(SDL_FINGERUP, 24, x, y + 40);
+    check("frozen: the pad rests", axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) == 0 && !btn(SDL_CONTROLLER_BUTTON_A));
+    finger(SDL_FINGERDOWN, 25, 600, 300);
+    finger(SDL_FINGERMOTION, 25, 650, 300);
+    check("frozen: a drag turns the camera round", cam_dx == 50);
+    finger(SDL_FINGERDOWN, 26, 800, 300);
+    finger(SDL_FINGERMOTION, 26, 900, 300);
+    check("frozen: two fingers apart zoom in", cam_zoom > 1.2f);
+    finger(SDL_FINGERUP, 25, 0, 0);
+    finger(SDL_FINGERUP, 26, 0, 0);
+    before = photos;
+    finger(SDL_FINGERDOWN, 27, x, y);
+    finger(SDL_FINGERUP, 27, x, y);
+    touch_draw();
+    check("frozen: CAMERA takes a photo", photos == before + 1);
+    shot(out, "frozen.ppm");
+    press(28, B_MENU);
+    finger(SDL_FINGERUP, 28, 0, 0);
+    check("frozen: MENU carries on", cam_state == 0 && cam_stops == 1 && !btn(SDL_CONTROLLER_BUTTON_BACK));
+    finger(SDL_FINGERDOWN, 29, x, y);
+    finger(SDL_FINGERMOTION, 29, x, y - 40);
+    check("CAMERA: slid up, the sweep", cam_state == 3);
+    finger(SDL_FINGERUP, 29, x, y - 40);
+    cam_state = 0;
+    before = photos;
+    finger(SDL_FINGERDOWN, 30, x, y);
+    finger(SDL_FINGERMOTION, 30, x - 40, y);
+    for (int i = 0; i < 4; i++) { touch_draw(); SDL_Delay(210); }
+    finger(SDL_FINGERUP, 30, x - 40, y);
+    touch_draw();
+    check("CAMERA: slid sideways, a burst while the finger stays down", photos - before >= 3 && photos - before <= 5);
+    /* CAM held in the tray: its options; SELFIE's tap makes it 5 */
+    press(31, B_MENU);
+    SDL_Delay(480); tick();
+    finger(SDL_FINGERUP, 31, 0, 0);
+    at(-T_CAMERA - 1, &x, &y);
+    finger(SDL_FINGERDOWN, 32, x, y);
+    SDL_Delay(480); tick();
+    finger(SDL_FINGERUP, 32, x, y);
+    touch_draw();
+    shot(out, "camopts.ppm");
+    finger(SDL_FINGERDOWN, 33, x, y + 2 * 20 + 30);  /* SELFIE, under CAM */
+    finger(SDL_FINGERUP, 33, x, y + 2 * 20 + 30);
+    FILE *cf = fopen("touch.cfg", "r");
+    char buf[256] = {0};
+    if (cf) { size_t got = fread(buf, 1, sizeof buf - 1, cf); (void)got; fclose(cf); }
+    check("CAM held: its options; SELFIE tapped to 5 (kept in touch.cfg), CAMERA still on", strstr(buf, "selfies=2") && strstr(buf, "camera=1"));
     remove("touch.cfg");
     printf(failures ? "%d FAILED\n" : "PASS\n", failures);
     return failures != 0;
