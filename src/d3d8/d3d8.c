@@ -979,7 +979,9 @@ static void rec_finish(void) {
         RecOp *o = &rec.ops[i];
         Dev *d = (Dev *)o->state;
         if (o->persp && d->rt != rec.main_rt) o->persp = 0;
-        if (o->persp && !rec.have_camera && d->vs < 0xF0000000u) {  /* the first fixed-function one: the camera */
+        /* the camera: the first 3D draw's view and projection on the device (shaders included: the game still sets
+         * them, as SH2EE's patches read them back) */
+        if (o->persp && !rec.have_camera && d->proj[11] != 0 && (d->proj[0] != 0 || d->proj[5] != 0)) {  /* the first fixed-function one: the camera */
             memcpy(rec.view, d->view, 64), memcpy(rec.proj, d->proj, 64);
             rec.have_camera = 1;
         }

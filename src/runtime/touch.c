@@ -714,6 +714,12 @@ static void build(Uint32 now) {
         if (b == B_LIGHT) draw_flashlight(c, T.held[b], atomic_load(&T.light) == 2, alpha);
         else if (b == B_CHEAT) draw_halo(c, T.held[b], cheat_get(), alpha);
         else if (b == B_CAMERA) draw_camera(c, T.held[b], T.burst, camera_state() == CAM_FREEZE ? 1.0f : alpha);
+        else if (b == B_MENU && camera_state() == CAM_FREEZE) {  /* frozen: an X, to carry on */
+            draw_button(c, "", T.held[b], 0, 1.0f, 8);
+            float r = c.r * 0.42f;
+            touchUiDraw_Line(&dl, c.x - r, c.y - r, c.x + r, c.y + r, 2.5f, touchUi_White(0.95f));
+            touchUiDraw_Line(&dl, c.x - r, c.y + r, c.x + r, c.y - r, 2.5f, touchUi_White(0.95f));
+        }
         else if (b >= B_UP && b <= B_RIGHT) draw_arrow(c, b - B_UP, T.held[b], alpha);
         else draw_button(c, btn_label[b], T.held[b], 0, alpha, size);
     }
@@ -735,7 +741,7 @@ static void build(Uint32 now) {
     if (camera_state() == CAM_FREEZE) {
         dl.alpha = 1;
         touchUiDraw_RRect(&dl, T.w / 2 - 230, T.h - 40, 460, 26, 13, touchUi_Black(0.5f), 0, touchUi_Clear());
-        touchUiDraw_Text(&dl, "FROZEN  -  drag to move round  -  pinch to zoom  -  CAMERA: photo  -  MENU: carry on",
+        touchUiDraw_Text(&dl, "FROZEN  -  drag to move round  -  pinch to zoom  -  CAMERA: photo  -  X: carry on",
                          T.w / 2, T.h - 27, 9.0f, 1.0f, touchUi_White(0.9f));
     }
     /* the last photo: a white flash, then a line saying it's saved */
