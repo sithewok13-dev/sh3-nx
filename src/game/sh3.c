@@ -193,13 +193,13 @@ static void free_camera_update(void) {
         FC.yaw = player_yaw, FC.pitch = -0.1f, FC.have_orbit = 1, FC.collision = 0;
     }
     FC.inactive = 0;
-    /* the right stick, squared for a gentle middle: about 1.8 radians a second at full tilt */
+    /* the right stick, straight (LOOK's steps already ease the touch drag): 3.6 radians a second at full tilt */
     float rx = MEMF(STICK_RX), ry = MEMF(STICK_RY);
     if (!(rx > -2 && rx < 2)) rx = 0;
     if (!(ry > -2 && ry < 2)) ry = 0;
-    float sx = rx * fabsf(rx), sy = ry * fabsf(ry), speed = 1.8f;
+    float sx = rx, sy = ry, speed = 3.6f;
     FC.yaw = wrap_angle(FC.yaw + sx * speed * dt);
-    FC.pitch = clampf(FC.pitch - sy * speed * 0.75f * dt, -0.9f, 1.0f);  /* the stick down looks down */
+    FC.pitch = clampf(FC.pitch - sy * speed * 0.65f * dt, -0.9f, 1.0f);  /* the stick down looks down */
     /* framing: further when walking, closer when aiming; the game's view is 2 atan(224 / 448) = 53 degrees high */
     float t_dist = (aiming ? 1.0f : 1.75f) * METRE, t_sh = (aiming ? 0.48f : 0.38f) * METRE, t_h = (aiming ? 1.45f : 1.5f) * METRE;
     float vertical = (60.0f - (aiming ? 10.0f : 0)) * PI_F / 180, t_zoom = 0.5f / tanf(vertical * 0.5f);
