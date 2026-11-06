@@ -51,7 +51,9 @@ Generated game code and the `.ipa` contain code derived from the game: keep them
   colors), dragging elsewhere on the right half for the right stick, L1/L2 and R1/R2 in the top corners, Back
   and Start at the top.
 - **The tray** (hold MENU): LOOK (look speed), OPAC, FPS, RATE (60 frames a second, or 30 for a cooler phone),
-  RES, CAM, CHEAT (Heather can't die; also the Halo of the Sun button up top, held), CTRL (modern or classic).
+  RES, CAM, CHEAT (Heather can't die; also the Halo of the Sun button up top, held), CTRL (modern or classic),
+  VIEW: FIXED (the game's own cameras, as made) or FREE (a camera over Heather's shoulder that the look drag turns,
+  from SilentHill3.FusionFix; cutscenes and scripted shots keep the game's camera).
 - **Camera** (turn CAM on in the tray; hold CAM for its options PHOTO, SELFIE and FREEZE), as in the Jedi Knight port:
   - tap: a photo, into the Photos app (PHOTO: the game's picture, with the buttons, or both)
   - hold half a second: a selfie. The game freezes, the camera swings round in front of Heather, and 1, 3 or 5

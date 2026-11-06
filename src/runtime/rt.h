@@ -123,7 +123,8 @@ int camera_state(void);                       /* 0, or the CAM_* asked for or ru
 void camera_orbit(float dx, float dy, float w);  /* a freeze's drag, in points, across a screen w wide */
 void camera_zoom(float factor);              /* a freeze's pinch: >1 the fingers moved apart */
 void dsound_pause(int on);                    /* dsound.c: the game's sound held (the camera's freeze) */
-int game_player_head(float head[3], float facing[3]);  /* game/controls.c: Heather's head and facing (world) */
+int game_player_head(float head[3], float facing[3]);
+void game_set_free_camera(int on);            /* game/sh3.c: VIEW in the tray, FREE (the right stick's camera) */  /* game/controls.c: Heather's head and facing (world) */
 
 /* the game's side of the touch controls, on every platform (d3d8.c calls the ticks each frame) */
 void cheat_set(int on);                       /* game/cheat.c: everything (health, guns, ammo, items) */

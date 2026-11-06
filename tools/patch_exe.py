@@ -11,6 +11,7 @@ BASE = 0x400000
 ZERO = 0x68A868        # a 0.0f constant in .rdata
 V_BORDER = 0x0EC00000  # sh3.c game_init: the cutscene borders' half height, 0 on a wide screen
 CAVE_HEALTH = 0x401ED8  # nop padding after a ret; sh3.c defines sub_00401ED8
+CAVE_HEADING = 0x47185B  # nop padding after a ret; sh3.c defines sub_0047185B (the free camera's heading)
 
 
 def p32(v):
@@ -35,6 +36,9 @@ PATCHES = [
     # SilentHill3.FusionFix (System.ixx): the frame pacing (sub_0041B2C0) counted a frame late and kept falling
     # back from 60 to 30 frames a second; inc edx instead of dec edx holds it steady
     (0x41B5D1, b'\x4a\x03\xc8\xa3', b'\x42\x03\xc8\xa3', 'frame pacing: a steady 60'),
+    # the free camera (sh3.c): movement follows its yaw, set just after the game works out the camera's heading
+    (CAVE_HEADING, b'\x90', b'\xC3', 'cave: the free camera heading'),
+    (0x4D3BD4, bytes.fromhex('8b0d8cc11207'), call(0x4D3BD4, CAVE_HEADING) + b'\x90', 'free camera heading'),
 ]
 
 
