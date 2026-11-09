@@ -41,7 +41,6 @@ command -v xcrun >/dev/null || { echo "xcrun not found: this needs a Mac with Xc
 mkdir -p "$WORK"
 [ -d "$WORK/depot_tools" ] || git clone -q --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$WORK/depot_tools"
 export PATH="$WORK/depot_tools:$PATH"
-export DEPOT_TOOLS_UPDATE=0
 
 mkdir -p "$WORK/angle" && cd "$WORK/angle"
 if [ "$(git rev-parse HEAD 2>/dev/null)" != "$ANGLE_REV" ]; then
