@@ -5,7 +5,7 @@
 # "game-files" release, with the BUILD_TOKEN secret), turns it into C as tools/regen.sh does, compiles the app and
 # uploads SH3.ipa straight back to the private repo's "app" release. Nothing of the game is kept here, and nothing
 # of it reaches this public log:
-#   - no cache holds anything of the game (only Python packages and SDL2, which are public);
+#   - no cache holds anything of the game (only Python packages, SDL2 and ANGLE, which are public);
 #   - the generator's and the compiler's output go to files; on failure only the error lines from the port's own
 #     sources are shown, and the whole log goes to the private repo (release "build-logs");
 #   - the exe, the generated code and the app are deleted at the end, whatever happened.
@@ -32,7 +32,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ANGLE (OpenGL ES on Metal, the app's renderer), built from its public source by the port's
+  # tools/ios/build-angle.sh and kept in this repo's cache, keyed by that script: an hour or two the first time,
+  # seconds after that. Nothing of the game is here.
+  angle:
+    runs-on: macos-15
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.port_ref }}
+          path: port
+          persist-credentials: false  # nothing of Chromium's build tools gets a token
+
+      - name: ANGLE in the cache?
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: port/build/angle
+          key: angle-ios-${{ hashFiles('port/tools/ios/build-angle.sh') }}
+          lookup-only: true
+
+      - name: Build ANGLE (only when the cache has none)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/node_modules || true
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -iv beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version | head -1
+          df -h / | tail -1
+          ANGLE_WORK="$RUNNER_TEMP/angle" port/tools/ios/build-angle.sh > angle.log 2>&1 || { tail -80 angle.log; exit 1; }
+          tail -8 angle.log
+
+      - name: Keep ANGLE in the cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: port/build/angle
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
   app:
+    needs: angle
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -94,6 +134,13 @@ jobs:
       - name: SDL2 for iOS
         run: port/tools/ios/build-deps.sh > deps.log 2>&1 || { tail -40 deps.log; exit 1; }
 
+      - name: ANGLE from the cache (the angle job above)
+        uses: actions/cache/restore@v4
+        with:
+          path: port/build/angle
+          key: angle-ios-${{ hashFiles('port/tools/ios/build-angle.sh') }}
+          fail-on-cache-miss: true
+
       - name: The app
         env:
           BUNDLE_ID: ${{ inputs.bundle_id }}
@@ -107,6 +154,9 @@ jobs:
             grep -E "error" build.log | grep -v "recomp/gen" | head -30
             exit 1
           }
+          # ANGLE is bundled, and the app does not link it or Apple's OpenGL ES's entry points (src/runtime/ios_angle.m)
+          ls build/SH3.app/Frameworks/libEGL.framework/libEGL build/SH3.app/Frameworks/libGLESv2.framework/libGLESv2 > /dev/null
+          if otool -L build/SH3.app/SH3 | grep -qE 'libEGL|libGLESv2'; then echo "::error::the app links ANGLE"; exit 1; fi
           mkdir Payload && cp -R build/SH3.app Payload/ && zip -qr SH3.ipa Payload
           echo "SH3.ipa: $(du -h SH3.ipa | cut -f1), build $GITHUB_RUN_NUMBER"
 
