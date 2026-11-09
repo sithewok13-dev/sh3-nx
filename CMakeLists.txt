@@ -27,7 +27,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   set(SH2_IOS_DEPS "${CMAKE_SOURCE_DIR}/build/ios-deps" CACHE PATH "SDL2 built for iOS (tools/ios/build-deps.sh)")
   target_compile_definitions(sh3 PRIVATE SH2_IOS SH2_GLES)
   enable_language(OBJC)
-  target_sources(sh3 PRIVATE src/runtime/ios_photos.m src/runtime/ios_angle.m)
+  target_sources(sh3 PRIVATE src/runtime/ios_photos.m src/runtime/ios_angle.m src/runtime/ios_build.m)
   target_include_directories(sh3 PRIVATE ${SH2_IOS_DEPS}/include)
   # ANGLE (OpenGL ES on Metal, tools/ios/build-angle.sh): its two frameworks go in the app's Frameworks folder and
   # are opened at run time (src/runtime/ios_angle.m), so the app still starts, on Apple's OpenGL ES, without them.
@@ -55,7 +55,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   set(SH2_IOS_BUNDLE_ID "com.example.sh3-nx" CACHE STRING "The app's bundle identifier")
   set(SH2_IOS_VERSION "0.08")
   set(SH2_IOS_BUILD "1" CACHE STRING "The build number (CFBundleVersion): the cloud build passes its run number")
-  target_compile_definitions(sh3 PRIVATE SH2_VERSION_LABEL="${SH2_IOS_VERSION} (${SH2_IOS_BUILD})")
   configure_file(ios/Info.plist.in ${CMAKE_BINARY_DIR}/Info.plist @ONLY)
   set_target_properties(sh3 PROPERTIES
     OUTPUT_NAME SH3

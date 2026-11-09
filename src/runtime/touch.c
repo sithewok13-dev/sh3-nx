@@ -40,8 +40,10 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-#ifndef SH2_VERSION_LABEL
-#define SH2_VERSION_LABEL "dev"
+#ifdef SH2_IOS
+const char *ios_build_stamp(void);  /* ios_build.m: "build 80 \xC2\xB7 Nov 9", or "build dev" */
+#else
+static const char *ios_build_stamp(void) { return "build dev"; }
 #endif
 
 /* ---- the standard's numbers ---- */
@@ -625,6 +627,25 @@ void touch_control_center(int b, float *x, float *y) {
 static touchUiDrawList dl;
 static const touchUiColor blue = {0.47f, 0.78f, 1.0f, 1.0f};  /* #78C7FF: holds and lit toggles */
 
+/* The build stamp, one line centred on x: the label font is ASCII, so its middle dot is drawn as a dot */
+static void draw_build_stamp(float x, float y, float size, touchUiColor c) {
+    const char *s = ios_build_stamp(), *dot = strstr(s, " \xC2\xB7 ");
+    if (!dot) {
+        touchUiDraw_Text(&dl, s, x, y, size, 1.0f, c);
+        return;
+    }
+    char a[32];
+    snprintf(a, sizeof a, "%.*s", (int)(dot - s), s);
+    const char *b = dot + 4;
+    float wa, wb, gap = size * 0.28f, r = size * 0.075f;
+    touchUiDraw_MeasureText(a, size, 1.0f, &wa, NULL);
+    touchUiDraw_MeasureText(b, size, 1.0f, &wb, NULL);
+    float left = x - (wa + 3 * gap + wb) / 2;
+    touchUiDraw_Text(&dl, a, left + wa / 2, y, size, 1.0f, c);
+    touchUiDraw_Circle(&dl, left + wa + 1.5f * gap, y + size * 0.075f, r, c, 0, touchUi_Clear());
+    touchUiDraw_Text(&dl, b, left + wa + 3 * gap + wb / 2, y, size, 1.0f, c);
+}
+
 static void draw_button(Circle c, const char *label, int held, int lit, float alpha, float size) {
     dl.alpha = alpha * (held ? 1.0f : IDLE_ALPHA);
     touchUiDraw_Circle(&dl, c.x, c.y, c.r, held ? touchUi_White(0.35f) : touchUi_Black(0.35f), 2.0f,
@@ -845,9 +866,10 @@ static void build(Uint32 now) {
             }
         }
         dl.alpha = 1;
-        touchUiDraw_Text(&dl, T.res != T.res_started ? "v" SH2_VERSION_LABEL "  -  port by cutarev  -  RES: restart the app to apply"
-                                                     : "v" SH2_VERSION_LABEL "  -  port by cutarev",
-                         (first.x + last.x) / 2, first.y + TRAY_R + 18, 8.0f, 1.0f, touchUi_White(0.45f));
+        draw_build_stamp((first.x + last.x) / 2, first.y + TRAY_R + 14, 11.0f, touchUi_White(0.45f));
+        if (!T.camopts)
+            touchUiDraw_Text(&dl, T.res != T.res_started ? "port by cutarev  -  RES: restart the app to apply" : "port by cutarev",
+                             (first.x + last.x) / 2, first.y + TRAY_R + 28, 8.0f, 1.0f, touchUi_White(0.45f));
     }
 }
 
