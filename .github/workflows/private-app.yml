@@ -157,6 +157,10 @@ jobs:
           # ANGLE is bundled, and the app does not link it or Apple's OpenGL ES's entry points (src/runtime/ios_angle.m)
           ls build/SH3.app/Frameworks/libEGL.framework/libEGL build/SH3.app/Frameworks/libGLESv2.framework/libGLESv2 > /dev/null
           if otool -L build/SH3.app/SH3 | grep -qE 'libEGL|libGLESv2'; then echo "::error::the app links ANGLE"; exit 1; fi
+          # the build stamp under the tray ("build 80 · Nov 9") and on the release's first line
+          day=$(date -u +%F); echo "SW_BUILD_DATE=$day" >> "$GITHUB_ENV"
+          /usr/libexec/PlistBuddy -c "Add :SWBuildNumber string $GITHUB_RUN_NUMBER" -c "Add :SWBuildDate string $day" \
+            build/SH3.app/Info.plist
           mkdir Payload && cp -R build/SH3.app Payload/ && zip -qr SH3.ipa Payload
           echo "SH3.ipa: $(du -h SH3.ipa | cut -f1), build $GITHUB_RUN_NUMBER"
 
@@ -168,6 +172,11 @@ jobs:
           gh release view app -R "$REPO" >/dev/null 2>&1 || \
             gh release create app -R "$REPO" --title "App" --notes "Unsigned SH3.ipa: open it in Feather to sign and install it."
           gh release upload app SH3.ipa --clobber -R "$REPO"
+          # the builds page reads "Build N · YYYY-MM-DD" from the body's first line; the rest stays
+          gh release view app -R "$REPO" --json body --jq .body | sed -e '1{/^Build [0-9]* · /d;}' | sed -e '/./,$!d' > body.md
+          { printf 'Build %s · %s\n\n' "$GITHUB_RUN_NUMBER" "$SW_BUILD_DATE"; cat body.md; } > notes.md
+          gh release edit app -R "$REPO" --notes-file notes.md
+          head -1 notes.md
 
       - name: The logs to the private repo, if something failed
         if: failure()
@@ -182,4 +191,4 @@ jobs:
 
       - name: Nothing of the game left behind
         if: always()
-        run: rm -rf game zip-start.bin port/src/recomp/gen port/build/sh3* port/build/disasm port/build/recomp port/build/func_id port/build/abi port/build/*.json port/build/*.log build Payload SH3.ipa build.log regen.log
+        run: rm -rf game zip-start.bin port/src/recomp/gen port/build/sh3* port/build/disasm port/build/recomp port/build/func_id port/build/abi port/build/*.json port/build/*.log build Payload SH3.ipa build.log regen.log body.md notes.md
