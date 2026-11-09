@@ -21,13 +21,32 @@ set_source_files_properties(src/d3d8/launcher.c PROPERTIES COMPILE_DEFINITIONS
                             OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/splash.bmp;${CMAKE_SOURCE_DIR}/assets/logo.bmp;${CMAKE_SOURCE_DIR}/assets/font.bmp")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-  # An iPhone/iPad app (tools/ios/build.sh): OpenGL ES 3.0 and a static SDL2 from tools/ios/build-deps.sh.
+  # An iPhone/iPad app (tools/ios/build.sh): OpenGL ES 3.0 (ANGLE on Metal, or Apple's) and a static SDL2 from
+  # tools/ios/build-deps.sh.
   # The bundle is unsigned: SideStore, AltStore or Sideloadly sign it on install.
   set(SH2_IOS_DEPS "${CMAKE_SOURCE_DIR}/build/ios-deps" CACHE PATH "SDL2 built for iOS (tools/ios/build-deps.sh)")
   target_compile_definitions(sh3 PRIVATE SH2_IOS SH2_GLES)
   enable_language(OBJC)
-  target_sources(sh3 PRIVATE src/runtime/ios_photos.m)
+  target_sources(sh3 PRIVATE src/runtime/ios_photos.m src/runtime/ios_angle.m)
   target_include_directories(sh3 PRIVATE ${SH2_IOS_DEPS}/include)
+  # ANGLE (OpenGL ES on Metal, tools/ios/build-angle.sh): its two frameworks go in the app's Frameworks folder and
+  # are opened at run time (src/runtime/ios_angle.m), so the app still starts, on Apple's OpenGL ES, without them.
+  set(SH2_IOS_ANGLE "${CMAKE_SOURCE_DIR}/build/angle" CACHE PATH "ANGLE built for iOS: include/ and out/ios/lib*.framework")
+  if(EXISTS "${SH2_IOS_ANGLE}/include/EGL/egl.h" AND EXISTS "${SH2_IOS_ANGLE}/out/ios/libEGL.framework/libEGL"
+     AND EXISTS "${SH2_IOS_ANGLE}/out/ios/libGLESv2.framework/libGLESv2")
+    message(STATUS "ANGLE: ${SH2_IOS_ANGLE}")
+    set_source_files_properties(src/runtime/ios_angle.m PROPERTIES INCLUDE_DIRECTORIES "${SH2_IOS_ANGLE}/include")
+    add_custom_command(TARGET sh3 POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:sh3>/Frameworks"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${SH2_IOS_ANGLE}/out/ios/libEGL.framework" "$<TARGET_BUNDLE_DIR:sh3>/Frameworks/libEGL.framework"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${SH2_IOS_ANGLE}/out/ios/libGLESv2.framework" "$<TARGET_BUNDLE_DIR:sh3>/Frameworks/libGLESv2.framework"
+      COMMENT "Bundling ANGLE" VERBATIM)
+    # libEGL finds libGLESv2 through @rpath
+    target_link_options(sh3 PRIVATE "-Wl,-rpath,@executable_path/Frameworks")
+  else()
+    message(WARNING "No ANGLE in ${SH2_IOS_ANGLE} (tools/ios/build-angle.sh): the app draws with Apple's OpenGL ES only")
+    set_source_files_properties(src/runtime/ios_angle.m PROPERTIES COMPILE_DEFINITIONS SH2_NO_ANGLE)
+  endif()
   target_link_libraries(sh3 PRIVATE ${SH2_IOS_DEPS}/lib/libSDL2main.a ${SH2_IOS_DEPS}/lib/libSDL2.a iconv m z
     "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreBluetooth"
     "-framework CoreFoundation" "-framework CoreGraphics" "-framework CoreHaptics" "-framework CoreMotion"

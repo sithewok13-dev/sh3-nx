@@ -1,7 +1,10 @@
 # Silent Hill 3 on iPhone and iPad
 
 The same port as the Switch build: the PC game's `sh3.exe` recompiled to C, running natively. No emulator, so
-no JIT is needed. It draws with OpenGL ES 3.0 at the screen's full resolution.
+no JIT is needed. It draws with OpenGL ES 3.0 at the screen's full resolution, through
+[ANGLE](https://chromium.googlesource.com/angle/angle) on Metal (Apple's own OpenGL ES is deprecated and costs far
+more time per draw call). Where ANGLE cannot start (iOS 15 to 17, which its build does not support), it draws with
+Apple's OpenGL ES instead.
 
 **Status: experimental.** The renderer passes `tests/run-render-test.sh`, and every source compiles for iOS
 (`.github/workflows/ios.yml`), but it has not yet been played through on a phone.
@@ -67,7 +70,12 @@ Generated game code and the `.ipa` contain code derived from the game: keep them
 - **Resolution**: *Full screen* (the default) matches the phone's shape, up to 1920 pixels wide, and is scaled
   to the panel's full resolution. The launcher's Options also offer 1080p, 720p and 4:3.
 - **Logs**: `sh3.log`, and `sh3-crash.log` after a crash, are written next to the game files, so the Files app
-  shows them.
+  shows them. `sh3.log` says which renderer draws (`GL: drawing with ANGLE (Metal)` or `Apple OpenGL ES`), and every
+  5 seconds of play how fast the game runs (`frames: 60.0 fps; per frame 16.7 ms ...`): the time per frame split
+  into the game's own work, drawing (its draw calls), present (the frame to the screen) and the frame limiter
+  (the game sleeping until its next frame is due).
+- **Renderer**: `renderer=opengles` in `sh3.ini` draws with Apple's OpenGL ES even where ANGLE works, to compare
+  or if ANGLE ever draws something wrong.
 
 ## Notes
 

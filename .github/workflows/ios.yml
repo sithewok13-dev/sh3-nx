@@ -1,6 +1,6 @@
 # The iOS port's checks. No game files are involved: the generated game code needs your own sh3.exe, so
 # the iOS job compiles every hand-written source with Apple's SDK, and the Linux job renders the D3D8 test
-# scenes with desktop GL and OpenGL ES (tests/run-render-test.sh).
+# scenes with desktop GL and OpenGL ES, also through the GL table iOS uses (tests/run-render-test.sh).
 name: iOS
 on:
   push:
@@ -19,6 +19,8 @@ jobs:
           key: ios-deps-${{ hashFiles('tools/ios/build-deps.sh') }}
       - name: SDL2 for iOS
         run: tools/ios/build-deps.sh
+      - name: ANGLE's headers (the frameworks are built and cached by the app build, private-app.yml on main)
+        run: tools/ios/build-angle.sh --headers
       - name: Compile for iOS arm64
         run: tools/ios/compile-check.sh
 

@@ -50,6 +50,9 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 _Noreturn void rt_fatal(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void rt_dump_thread(void);
 extern int rt_frame;                 /* frames presented so far */
+/* kernel32.c: nanoseconds this thread has spent in Sleep (the game's frame limiters wait there); the frame-time
+ * log (d3d8.c) takes the render thread's share each frame */
+extern _Thread_local uint64_t rt_sleep_ns;
 extern int rt_trace;                 /* SH3_TRACE=1: log every bridged call */
 extern char rt_game_dir[512];        /* folder with sh3.exe and data/ */
 uint32_t galloc(uint32_t size);      /* guest heap, 16-byte aligned, zeroed */

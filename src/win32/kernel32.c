@@ -455,8 +455,12 @@ WINAPI(TlsGetValue, "TlsGetValue", 1) { last_error = 0; return tls_slot[ARG(0) &
 WINAPI(TlsSetValue, "TlsSetValue", 2) { tls_slot[ARG(0) & 63] = ARG(1); return 1; }
 /* Sleep(0) sleeps 0.1 ms rather than yielding: SH2's frame limiters spun on it until a
  * QueryPerformanceCounter deadline, which otherwise kept two cores busy doing nothing. */
+static uint64_t now_ns(void);
+_Thread_local uint64_t rt_sleep_ns;
 WINAPI(Sleep, "Sleep", 1) {
+    uint64_t t0 = now_ns();
     usleep(ARG(0) ? ARG(0) * 1000u : 100);
+    rt_sleep_ns += now_ns() - t0;
     return 0;
 }
 
