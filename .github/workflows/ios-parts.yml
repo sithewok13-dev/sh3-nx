@@ -1,0 +1,104 @@
+# The iPhone app's ready-made parts, for anyone building the app from their own copy of the game (the "build your
+# own" template): SDL2 and ANGLE (OpenGL ES on Metal), built for
+# iOS from their public sources by the port's tools/ios scripts. Nothing of the game is in them.
+#
+# They go to this repo's public "ios-parts" release, named by the hash of the script that builds each one
+# (ios-deps-<hash>.tar.xz, angle-<hash>.tar.xz): a template build looks for the names its port's scripts hash to,
+# and builds the part itself only when they are missing. Run this after changing tools/ios/build-deps.sh or
+# tools/ios/build-angle.sh on the ios branch.
+name: iPhone parts
+on:
+  workflow_dispatch:
+    inputs:
+      port_ref:
+        description: "Branch or commit of this repo whose scripts build the parts"
+        default: ios
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-parts
+  cancel-in-progress: false
+
+jobs:
+  parts:
+    runs-on: macos-15
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.port_ref }}
+          path: port
+          persist-credentials: false
+
+      - name: Names
+        id: names
+        run: |
+          deps=ios-deps-$(shasum -a 256 port/tools/ios/build-deps.sh | cut -c1-16).tar.xz
+          angle=angle-$(shasum -a 256 port/tools/ios/build-angle.sh | cut -c1-16).tar.xz
+          echo "deps=$deps" >> "$GITHUB_OUTPUT"; echo "angle=$angle" >> "$GITHUB_OUTPUT"
+          echo "$deps, $angle"
+
+      # the same cache as the private app build: ANGLE is built once for both
+      - name: ANGLE from the cache
+        id: angle
+        uses: actions/cache/restore@v4
+        with:
+          path: port/build/angle
+          key: angle-ios-${{ hashFiles('port/tools/ios/build-angle.sh') }}
+
+      - name: Build ANGLE (only when the cache has none)
+        if: steps.angle.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/node_modules || true
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -iv beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          ANGLE_WORK="$RUNNER_TEMP/angle" port/tools/ios/build-angle.sh > angle.log 2>&1 || { tail -80 angle.log; exit 1; }
+          tail -8 angle.log
+
+      - name: Keep ANGLE in the cache
+        if: steps.angle.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: port/build/angle
+          key: angle-ios-${{ hashFiles('port/tools/ios/build-angle.sh') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: port/build/ios-deps
+          key: ios-deps-${{ hashFiles('port/tools/ios/build-deps.sh') }}
+
+      - name: SDL2
+        run: port/tools/ios/build-deps.sh > deps.log 2>&1 || { tail -40 deps.log; exit 1; }
+
+      - name: Pack them, with their licenses
+        env:
+          DEPS: ${{ steps.names.outputs.deps }}
+          ANGLE: ${{ steps.names.outputs.angle }}
+        run: |
+          cat > port/build/ios-deps/SOURCES.txt <<'EOF'
+          SDL2 (zlib license), a static library for arm64 iOS, built unmodified from
+          its release tarball by tools/ios/build-deps.sh in https://github.com/sithewok13-dev/sh3-nx (branch ios),
+          which names the version, the download address and the configure options:
+            https://github.com/libsdl-org/SDL/releases
+          EOF
+          cat > port/build/angle/SOURCES.txt <<'EOF'
+          ANGLE (BSD 3-clause, LICENSE in its source), libEGL and libGLESv2 frameworks for arm64 iOS, built unmodified
+          by tools/ios/build-angle.sh in https://github.com/sithewok13-dev/sh3-nx (branch ios), which names the
+          revision of https://chromium.googlesource.com/angle/angle and the build arguments.
+          EOF
+          tar -cJf "$DEPS" -C port/build ios-deps
+          tar -cJf "$ANGLE" -C port/build angle
+          ls -lh "$DEPS" "$ANGLE"
+
+      - name: Upload to the "ios-parts" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPS: ${{ steps.names.outputs.deps }}
+          ANGLE: ${{ steps.names.outputs.angle }}
+        run: |
+          gh release view ios-parts -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create ios-parts -R "$GITHUB_REPOSITORY" --title "iPhone app parts" --latest=false \
+              --notes "SDL2 and ANGLE built for iOS, for building the iPhone app from your own copy of the game. No game content. Sources and licenses: SOURCES.txt inside each archive."
+          gh release upload ios-parts "$DEPS" "$ANGLE" --clobber -R "$GITHUB_REPOSITORY"
